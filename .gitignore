@@ -1,0 +1,10 @@
+# Build
+/target
+**/*.rs.bk
+
+# Demo/export outputs (NOT the goldens: goldens/**/*.npz etc. ARE committed)
+/outputs/
+*.gif
+
+# Editor/OS noise
+.DS_Store

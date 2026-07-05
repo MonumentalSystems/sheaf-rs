@@ -1,0 +1,20 @@
+[package]
+name = "sheaf-io"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Weights (safetensors), golden fixtures (.npz), data views, and the maze generator"
+
+[dependencies]
+ndarray = { workspace = true }
+ndarray-npy = { workspace = true }
+safetensors = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+anyhow = { workspace = true }
+half = { workspace = true }
+sheaf-core = { workspace = true }
+sheaf-nn = { workspace = true }
+
+[dev-dependencies]
+approx = { workspace = true }

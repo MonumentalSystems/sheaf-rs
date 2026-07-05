@@ -1,0 +1,32 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/sheaf-core",
+    "crates/sheaf-io",
+    "crates/sheaf-nn",
+    "crates/sheaf-demo",
+]
+
+[workspace.package]
+edition = "2021"
+version = "0.1.0"
+license = "Apache-2.0"
+
+[workspace.dependencies]
+# Core tensors. f32 default everywhere (matches the JAX fp32/no-TF32 pin).
+ndarray = "0.16"
+# .npz golden fixtures (f32 / i64 arrays; reads both savez and savez_compressed).
+# Chosen over `npyz`: NpzReader deserializes straight into ndarray types with
+# ndarray 0.16 support; npyz would need a manual zip + Vec -> ndarray hop.
+ndarray-npy = { version = "0.9", default-features = false, features = ["npz", "compressed_npz"] }
+safetensors = "0.5"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+approx = "0.5"
+anyhow = "1"
+half = "2"
+
+# Intra-workspace
+sheaf-core = { path = "crates/sheaf-core" }
+sheaf-io = { path = "crates/sheaf-io" }
+sheaf-nn = { path = "crates/sheaf-nn" }

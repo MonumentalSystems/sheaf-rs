@@ -1,0 +1,17 @@
+[package]
+name = "sheaf-demo"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Native demo + CI-facing golden replay binaries"
+
+[dependencies]
+ndarray = { workspace = true }
+anyhow = { workspace = true }
+sheaf-core = { workspace = true }
+sheaf-io = { workspace = true }
+sheaf-nn = { workspace = true }
+
+[[bin]]
+name = "parity_check"
+path = "src/bin/parity_check.rs"

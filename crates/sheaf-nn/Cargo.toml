@@ -1,0 +1,16 @@
+[package]
+name = "sheaf-nn"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Inference-only layers, encoders/decoders, and the Sheaf-ADMM model"
+
+[dependencies]
+ndarray = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+anyhow = { workspace = true }
+sheaf-core = { workspace = true }
+
+[dev-dependencies]
+approx = { workspace = true }
