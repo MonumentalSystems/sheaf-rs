@@ -10,6 +10,7 @@ use common::*;
 use ndarray::{s, Array2, Array5};
 use sheaf_core::geometry::{FixedGeometry, LoraGeometry, SheafGeometry};
 use sheaf_core::tensor::NodeState;
+use sheaf_core::Scalar;
 
 const N: usize = 4;
 const B: usize = 2;
@@ -17,7 +18,7 @@ const D_V: usize = 3;
 const D_E: usize = 2;
 const RANK: usize = 2;
 const K_DIRS: usize = 8;
-const LORA_ALPHA: f32 = 4.0;
+const LORA_ALPHA: Scalar = 4.0;
 
 /// LoRA geometry over the 2x2 8-way grid, from random per-node factors.
 fn setup_lora(
@@ -54,7 +55,7 @@ fn setup_lora(
 #[test]
 fn lora_scale_is_alpha_over_rank() {
     let (lora, _fixed, _z) = setup_lora(false, false, 3);
-    assert_eq!(lora.scale(), LORA_ALPHA / RANK as f32);
+    assert_eq!(lora.scale(), LORA_ALPHA / RANK as Scalar);
 }
 
 #[test]
@@ -105,7 +106,7 @@ fn lora_gate_zero_equals_fixed() {
 }
 
 /// Materialize the effective per-(edge, batch) map `R + scale * g * A B^T`.
-fn effective_blocks(lora: &LoraGeometry, slot: usize, b: usize) -> Vec<Array2<f32>> {
+fn effective_blocks(lora: &LoraGeometry, slot: usize, b: usize) -> Vec<Array2<Scalar>> {
     let (a_e, b_e, gate) = if slot == 0 {
         (&lora.a_u_edge, &lora.b_u_edge, &lora.gate_u_edge)
     } else {
@@ -142,7 +143,7 @@ fn lora_matches_dense_materialized_f() {
         let zf = flatten_batch(&z, b);
 
         let fz = f.dot(&zf);
-        let r_flat: ndarray::Array1<f32> = r.slice(s![.., b, ..]).iter().cloned().collect();
+        let r_flat: ndarray::Array1<Scalar> = r.slice(s![.., b, ..]).iter().cloned().collect();
         assert_close(&r_flat, &fz, 1e-4, 1e-4, "LoRA residuals vs dense F z");
 
         let dense = f.t().dot(&fz);
@@ -160,13 +161,13 @@ fn create_directional_gathers_by_slot_tables() {
 
     // Distinguishable factors: encode (node, slot) in every element.
     let a = Array5::from_shape_fn((N, B, K_DIRS, D_E, RANK), |(n, b, k, i, r)| {
-        (n * 1000 + k * 10) as f32 + b as f32 * 0.5 + i as f32 * 0.01 + r as f32 * 0.001
+        (n * 1000 + k * 10) as Scalar + b as Scalar * 0.5 + i as Scalar * 0.01 + r as Scalar * 0.001
     });
     let b_f = Array5::from_shape_fn((N, B, K_DIRS, D_V, RANK), |(n, b, k, j, r)| {
-        -((n * 1000 + k * 10) as f32) - b as f32 * 0.5 - j as f32 * 0.01 - r as f32 * 0.001
+        -((n * 1000 + k * 10) as Scalar) - b as Scalar * 0.5 - j as Scalar * 0.01 - r as Scalar * 0.001
     });
     let gate = ndarray::Array3::from_shape_fn((N, B, K_DIRS), |(n, b, k)| {
-        (n * 100 + k) as f32 + b as f32 * 0.25
+        (n * 100 + k) as Scalar + b as Scalar * 0.25
     });
 
     let lora = LoraGeometry::create_directional(
@@ -228,13 +229,13 @@ fn lora_laplacian_symmetric_psd() {
         let mut lb = NodeState::zeros(b.dim());
         lora.laplacian_apply(&a, &mut la);
         lora.laplacian_apply(&b, &mut lb);
-        let a_lb: f32 = a.iter().zip(lb.iter()).map(|(&x, &y)| x * y).sum();
-        let la_b: f32 = la.iter().zip(b.iter()).map(|(&x, &y)| x * y).sum();
+        let a_lb: Scalar = a.iter().zip(lb.iter()).map(|(&x, &y)| x * y).sum();
+        let la_b: Scalar = la.iter().zip(b.iter()).map(|(&x, &y)| x * y).sum();
         assert!(
             (a_lb - la_b).abs() <= 1e-2 * a_lb.abs().max(1.0),
             "LoRA L not symmetric: {a_lb} vs {la_b}"
         );
-        let a_la: f32 = a.iter().zip(la.iter()).map(|(&x, &y)| x * y).sum();
+        let a_la: Scalar = a.iter().zip(la.iter()).map(|(&x, &y)| x * y).sum();
         assert!(a_la >= -1e-4, "LoRA L not PSD: {a_la}");
     }
 }

@@ -11,6 +11,7 @@ pub use z_cg::{unrolled_cg_solve, UnrolledCgParams, ZMode, CG_DENOM_EPS};
 use ndarray::{Array3, Array5};
 
 use crate::tensor::NodeState;
+use crate::Scalar;
 
 /// Local-objective parameters emitted by the encoder, one variant per
 /// `objective_mode` (replaces the Python stringly-typed dict — PLAN.md §3.2).
@@ -21,10 +22,10 @@ use crate::tensor::NodeState;
 /// `lower` is hardcoded 0 for `NonNeg` and `L1Box` (matching encoder.py).
 pub enum Objective {
     /// `x = (beta*h + rho*(z - y)) / (beta + rho)`.
-    Simple { beta: f32 },
+    Simple { beta: Scalar },
     Quadratic { q_diag: NodeState, q: NodeState },
     /// MNIST: scalar l1 from config.
-    Lasso { q_diag: NodeState, q: NodeState, l1: f32 },
+    Lasso { q_diag: NodeState, q: NodeState, l1: Scalar },
     /// Sudoku: lower = 0, no upper.
     NonNeg { q_diag: NodeState, q: NodeState },
     /// Maze: per-dim l1 and box upper, lower = 0.
@@ -38,10 +39,10 @@ pub enum Objective {
 
 /// Per-node LoRA factors, reshaped by the parent model to `[N, B, K, ., r]`.
 pub struct LoraFactors {
-    pub a: Array5<f32>,               // [N, B, K, d_e, r]
-    pub b: Array5<f32>,               // [N, B, K, d_v, r]
-    pub gate: Option<Array3<f32>>,    // [N, B, K]
-    pub lora_alpha: f32,
+    pub a: Array5<Scalar>,               // [N, B, K, d_e, r]
+    pub b: Array5<Scalar>,               // [N, B, K, d_v, r]
+    pub gate: Option<Array3<Scalar>>,    // [N, B, K]
+    pub lora_alpha: Scalar,
 }
 
 /// Everything the ADMM loop consumes from the encoder.

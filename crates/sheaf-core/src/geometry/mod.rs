@@ -12,9 +12,10 @@ pub use fixed::FixedGeometry;
 pub use lora::LoraGeometry;
 
 use crate::tensor::{BatchVec, EdgeState, NodeState};
+use crate::Scalar;
 
 /// Epsilon UNDER the sqrt in `consistency_rms` (base.py default).
-pub const CONSISTENCY_EPS: f32 = 1e-6;
+pub const CONSISTENCY_EPS: Scalar = 1e-6;
 
 /// The sheaf-geometry interface (mirrors the Python `SheafGeometry` Protocol).
 ///
@@ -32,9 +33,11 @@ pub trait SheafGeometry {
     fn laplacian_apply(&self, z: &NodeState, out: &mut NodeState);
 
     /// Scalar sheaf energy `1/2 sum_e ||r_e||^2` (summed over E, B, d_e).
-    fn energy(&self, z: &NodeState) -> f32 {
+    fn energy(&self, z: &NodeState) -> Scalar {
         let r = self.edge_residuals(z);
-        0.5 * r.iter().map(|&x| x * x).sum::<f32>()
+        // Final reduction kept serial in flat memory order: bitwise-identical
+        // regardless of the `parallel` feature (only `r` is fanned over B).
+        0.5 * r.iter().map(|&x| x * x).sum::<Scalar>()
     }
 
     /// Per-batch RMS disagreement `sqrt(mean_{E,d_e}(r^2) + 1e-6)` -> `[B]`.
@@ -43,18 +46,19 @@ pub trait SheafGeometry {
     fn consistency_rms(&self, z: &NodeState) -> BatchVec {
         let r = self.edge_residuals(z);
         let (e, b, d_e) = r.dim();
-        let denom = (e * d_e) as f32;
-        let mut out = BatchVec::zeros(b);
-        for bi in 0..b {
-            let mut acc = 0.0f32;
+        let denom = (e * d_e) as Scalar;
+        // Batch-parallel (`parallel` feature); each batch's (E, d_e) reduction
+        // order is unchanged, so results are identical to the serial path.
+        let vals = crate::par::map_batches(b, |bi| {
+            let mut acc = 0.0 as Scalar;
             for ei in 0..e {
                 for di in 0..d_e {
                     let v = r[[ei, bi, di]];
                     acc += v * v;
                 }
             }
-            out[bi] = (acc / denom + CONSISTENCY_EPS).sqrt();
-        }
-        out
+            (acc / denom + CONSISTENCY_EPS).sqrt()
+        });
+        BatchVec::from_vec(vals)
     }
 }

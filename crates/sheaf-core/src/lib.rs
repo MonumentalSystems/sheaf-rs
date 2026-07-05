@@ -12,9 +12,21 @@
 //! - `q_epsilon = 1e-4` added in the objective heads (sheaf-nn side);
 //! - `alpha == 1.0` skips the relaxation blend entirely (bitwise fast path).
 
+/// Crate-wide scalar float type. `f32` by default (the shipped/JAX-fp32 pin and
+/// the only wasm build); `f64` under the `f64` feature — a reference-precision
+/// build that exists SOLELY to disambiguate roundoff from bugs during parity
+/// debugging (PLAN.md §3.4). The whole crate's arithmetic routes through this,
+/// so downstream (sheaf-nn/io/demo/web) keeps its default `f32` unchanged.
+#[cfg(not(feature = "f64"))]
+pub type Scalar = f32;
+/// See [`Scalar`] — reference-precision alias under `--features f64`.
+#[cfg(feature = "f64")]
+pub type Scalar = f64;
+
 pub mod admm;
 pub mod geometry;
 pub mod graph;
+pub(crate) mod par;
 pub mod solvers;
 pub mod tensor;
 

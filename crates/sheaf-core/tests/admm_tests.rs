@@ -13,13 +13,14 @@ use sheaf_core::solvers::{
     diagonal_prox_solve, unrolled_cg_solve, EncoderOutput, Objective, UnrolledCgParams, ZMode,
 };
 use sheaf_core::tensor::NodeState;
+use sheaf_core::Scalar;
 
 const N: usize = 4;
 const B: usize = 2;
 const D_V: usize = 4;
 const D_E: usize = 2;
-const RHO: f32 = 0.25;
-const GAMMA: f32 = 5.0;
+const RHO: Scalar = 0.25;
+const GAMMA: Scalar = 5.0;
 
 /// Maze-flavored mini setup: tiny graph, L1Box objective, prox-mode CG T=5.
 fn setup(seed: u64) -> (EncoderOutput, FixedGeometry, UnrolledCgParams, NodeState) {
@@ -30,9 +31,9 @@ fn setup(seed: u64) -> (EncoderOutput, FixedGeometry, UnrolledCgParams, NodeStat
     let geo = FixedGeometry::new(graph, maps);
 
     let h = rng.array3((N, B, D_V));
-    let q_diag = Array3::from_shape_fn((N, B, D_V), |_| rng.f32().abs() + 0.1 + 1e-4);
+    let q_diag = Array3::from_shape_fn((N, B, D_V), |_| rng.scalar().abs() + 0.1 + 1e-4);
     let q = rng.array3((N, B, D_V));
-    let l1 = Array3::from_shape_fn((N, B, D_V), |_| rng.f32().abs() * 0.05);
+    let l1 = Array3::from_shape_fn((N, B, D_V), |_| rng.scalar().abs() * 0.05);
     let upper = Array3::from_elem((N, B, D_V), 1.0);
     let enc = EncoderOutput {
         h: h.clone(),
@@ -48,7 +49,7 @@ fn setup(seed: u64) -> (EncoderOutput, FixedGeometry, UnrolledCgParams, NodeStat
     (enc, geo, z_params, h)
 }
 
-fn params(k: usize, alpha: f32) -> AdmmParams {
+fn params(k: usize, alpha: Scalar) -> AdmmParams {
     AdmmParams { rho: RHO, alpha, gamma: GAMMA, k }
 }
 
@@ -132,8 +133,8 @@ fn history_residual_definitions() {
         };
         for ni in 0..N {
             for bi in 0..B {
-                let mut p_acc = 0.0f32;
-                let mut d_acc = 0.0f32;
+                let mut p_acc = 0.0 as Scalar;
+                let mut d_acc = 0.0 as Scalar;
                 for di in 0..D_V {
                     let pd = xk[[ni, bi, di]] - zk[[ni, bi, di]];
                     p_acc += pd * pd;
@@ -170,7 +171,7 @@ fn reference_run(
     z_params: &UnrolledCgParams,
     z_init: &NodeState,
     k: usize,
-    alpha: f32,
+    alpha: Scalar,
 ) -> (NodeState, NodeState, NodeState) {
     let mut x = z_init.clone();
     let mut z = z_init.clone();
@@ -225,7 +226,7 @@ fn matches_reference_loop_alpha_relaxed() {
     // And the blend must actually change the trajectory vs alpha = 1.
     let (state1, _) =
         run_admm(&enc, &geo, XSolverKind::DiagonalProx, &z_params, &params(k, 1.0), &z_init, 1);
-    let diff: f32 = state.z.iter().zip(state1.z.iter()).map(|(&a, &b)| (a - b).abs()).sum();
+    let diff: Scalar = state.z.iter().zip(state1.z.iter()).map(|(&a, &b)| (a - b).abs()).sum();
     assert!(diff > 1e-6, "alpha=0.5 should differ from alpha=1.0");
 }
 

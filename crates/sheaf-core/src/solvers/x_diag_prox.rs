@@ -14,12 +14,13 @@
 
 use crate::solvers::Objective;
 use crate::tensor::NodeState;
+use crate::Scalar;
 
 /// `soft_threshold(x, th) = sign(x) * max(|x| - th, 0)`.
 ///
 /// Sign follows `jnp.sign` exactly (`sign(0) = 0`), not `f32::signum`.
 #[inline]
-pub fn soft_threshold(x: f32, threshold: f32) -> f32 {
+pub fn soft_threshold(x: Scalar, threshold: Scalar) -> Scalar {
     let sign = if x > 0.0 {
         1.0
     } else if x < 0.0 {
@@ -38,7 +39,7 @@ pub fn soft_threshold(x: f32, threshold: f32) -> f32 {
 pub fn diagonal_prox_solve(
     z: &NodeState,
     y: &NodeState,
-    rho: f32,
+    rho: Scalar,
     objective: &Objective,
 ) -> NodeState {
     // (q_diag, q, scalar l1, per-dim l1, lower, per-dim upper).
@@ -46,18 +47,18 @@ pub fn diagonal_prox_solve(
     let (q_diag, q, l1_scalar, l1, lower, upper): (
         &NodeState,
         &NodeState,
-        f32,
+        Scalar,
         Option<&NodeState>,
-        f32,
+        Scalar,
         Option<&NodeState>,
     ) = match objective {
         Objective::Simple { .. } => {
             panic!("diagonal_prox_solve called with Objective::Simple; use simple_solve")
         }
         Objective::Quadratic { q_diag, q } => {
-            (q_diag, q, 0.0, None, f32::NEG_INFINITY, None)
+            (q_diag, q, 0.0, None, Scalar::NEG_INFINITY, None)
         }
-        Objective::Lasso { q_diag, q, l1 } => (q_diag, q, *l1, None, f32::NEG_INFINITY, None),
+        Objective::Lasso { q_diag, q, l1 } => (q_diag, q, *l1, None, Scalar::NEG_INFINITY, None),
         Objective::NonNeg { q_diag, q } => (q_diag, q, 0.0, None, 0.0, None),
         Objective::L1Box { q_diag, q, l1, upper } => (q_diag, q, 0.0, Some(l1), 0.0, Some(upper)),
     };
@@ -77,7 +78,7 @@ pub fn diagonal_prox_solve(
                 let t = (rho * v - q[idx]) / a;
                 let l1_here = l1.map_or(l1_scalar, |m| m[idx]);
                 let xt = soft_threshold(t, l1_here / a);
-                let hi = upper.map_or(f32::INFINITY, |m| m[idx]);
+                let hi = upper.map_or(Scalar::INFINITY, |m| m[idx]);
                 // jnp.clip: min(max(x, lower), upper) — clip AFTER the
                 // soft-threshold (ordering is load-bearing, see tests).
                 x[idx] = xt.max(lower).min(hi);

@@ -13,13 +13,14 @@ use sheaf_core::geometry::{FixedGeometry, SheafGeometry};
 use sheaf_core::graph::AgentGraph;
 use sheaf_core::solvers::{unrolled_cg_solve, UnrolledCgParams, ZMode};
 use sheaf_core::tensor::NodeState;
+use sheaf_core::Scalar;
 
 const N: usize = 8;
 const B: usize = 2;
 const D_V: usize = 3; // N * d_v = 24 per batch system
 const D_E: usize = 2;
-const RHO: f32 = 0.25;
-const GAMMA: f32 = 5.0;
+const RHO: Scalar = 0.25;
+const GAMMA: Scalar = 5.0;
 
 /// Ring + chords over 8 nodes, random fixed maps.
 fn setup(seed: u64) -> (FixedGeometry, NodeState, NodeState) {
@@ -44,11 +45,11 @@ fn lap(geo: &dyn SheafGeometry, z: &NodeState) -> NodeState {
 }
 
 /// Per-batch L2 norm over (N, d_v).
-fn bnorm(a: &NodeState) -> Vec<f32> {
+fn bnorm(a: &NodeState) -> Vec<Scalar> {
     let (n, b, d) = a.dim();
     (0..b)
         .map(|bi| {
-            let mut acc = 0.0f32;
+            let mut acc = 0.0 as Scalar;
             for ni in 0..n {
                 for di in 0..d {
                     acc += a[[ni, bi, di]] * a[[ni, bi, di]];
@@ -94,8 +95,8 @@ fn project_mode_reduces_sheaf_residual_below_10pct() {
     let z = unrolled_cg_solve(&z_target, &z_prev, &geo, &params, RHO);
     let r_in = geo.edge_residuals(&z_target);
     let r_out = geo.edge_residuals(&z);
-    let in_sq: f32 = r_in.iter().map(|&v| v * v).sum();
-    let out_sq: f32 = r_out.iter().map(|&v| v * v).sum();
+    let in_sq: Scalar = r_in.iter().map(|&v| v * v).sum();
+    let out_sq: Scalar = r_out.iter().map(|&v| v * v).sum();
     assert!(
         out_sq < 0.1 * in_sq,
         "project mode: residual energy {out_sq} not < 10% of input {in_sq}"
@@ -141,7 +142,7 @@ fn project_mode_is_not_idempotent_by_design() {
     };
     let z1 = unrolled_cg_solve(&z_target, &z_prev, &geo, &params, RHO);
     let z2 = unrolled_cg_solve(&z1, &z_prev, &geo, &params, RHO);
-    let diff: f32 = z1.iter().zip(z2.iter()).map(|(&a, &b)| (a - b).abs()).sum();
+    let diff: Scalar = z1.iter().zip(z2.iter()).map(|(&a, &b)| (a - b).abs()).sum();
     assert!(
         diff > 1e-4,
         "project mode unexpectedly idempotent (diff {diff}); the legacy warm start semantics changed"
@@ -151,7 +152,7 @@ fn project_mode_is_not_idempotent_by_design() {
 #[test]
 fn prox_mode_more_iters_reduce_residual() {
     let (geo, z_target, z_prev) = setup(71);
-    let resid_at = |t: usize| -> f32 {
+    let resid_at = |t: usize| -> Scalar {
         let params = UnrolledCgParams {
             mode: ZMode::Prox,
             gamma: GAMMA,

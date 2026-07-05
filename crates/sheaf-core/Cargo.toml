@@ -7,8 +7,18 @@ repository.workspace = true
 readme = "README.md"
 description = "Sheaf-ADMM coordination core: graph, geometry, solvers, unrolled ADMM (ndarray only)"
 
+[features]
+default = []
+# rayon over the batch axis (numerically identical; default OFF keeps the crate
+# single-threaded and wasm-safe — no rayon compiled in unless enabled).
+parallel = ["dep:rayon"]
+# Reference-precision build: routes the crate's scalar float type to f64 solely
+# to disambiguate roundoff from bugs during parity debugging (PLAN.md §3.4).
+f64 = []
+
 [dependencies]
 ndarray = { workspace = true }
+rayon = { workspace = true, optional = true }
 
 [dev-dependencies]
 approx = { workspace = true }

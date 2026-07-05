@@ -16,9 +16,10 @@ use ndarray::Axis;
 
 use crate::geometry::SheafGeometry;
 use crate::tensor::{BatchVec, NodeState};
+use crate::Scalar;
 
 /// CG denominator guard. Exactly 1e-8 — see module docs.
-pub const CG_DENOM_EPS: f32 = 1e-8;
+pub const CG_DENOM_EPS: Scalar = 1e-8;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ZMode {
@@ -34,12 +35,12 @@ pub enum ZMode {
 pub struct UnrolledCgParams {
     pub mode: ZMode,
     /// Soft-consensus weight gamma (maze: 5.0).
-    pub gamma: f32,
+    pub gamma: Scalar,
     /// T, the fixed unroll length (maze: 5).
     pub num_iters: usize,
     /// Project-mode `L + eps*I` regularizer (default 1e-5). Distinct from
     /// `CG_DENOM_EPS`.
-    pub tikhonov_eps: f32,
+    pub tikhonov_eps: Scalar,
 }
 
 impl Default for UnrolledCgParams {
@@ -61,17 +62,18 @@ fn lap(geometry: &dyn SheafGeometry, z: &NodeState) -> NodeState {
 /// keeping the batch axis -> `[B]`.
 fn bdot(a: &NodeState, c: &NodeState) -> BatchVec {
     let (n, b, d) = a.dim();
-    let mut out = BatchVec::zeros(b);
-    for bi in 0..b {
-        let mut acc = 0.0f32;
+    // Batch-parallel (`parallel` feature); each batch's (N, d) accumulation
+    // order is unchanged, so the reduction is bitwise identical to serial.
+    let vals = crate::par::map_batches(b, |bi| {
+        let mut acc = 0.0 as Scalar;
         for ni in 0..n {
             for di in 0..d {
                 acc += a[[ni, bi, di]] * c[[ni, bi, di]];
             }
         }
-        out[bi] = acc;
-    }
-    out
+        acc
+    });
+    BatchVec::from_vec(vals)
 }
 
 /// Per-batch scalar broadcast: `s[None, :, None] * v`.
@@ -112,7 +114,7 @@ pub fn unrolled_cg_solve(
     z_prev: &NodeState,
     geometry: &dyn SheafGeometry,
     params: &UnrolledCgParams,
-    rho: f32,
+    rho: Scalar,
 ) -> NodeState {
     match params.mode {
         ZMode::Project => {

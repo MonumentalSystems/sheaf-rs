@@ -7,16 +7,17 @@ mod common;
 
 use common::*;
 
-use ndarray::Array1;
+use ndarray::{s, Array1, Array3};
 use sheaf_core::geometry::{FixedGeometry, SheafGeometry, CONSISTENCY_EPS};
 use sheaf_core::tensor::NodeState;
+use sheaf_core::Scalar;
 
 const N: usize = 4;
 const B: usize = 3;
 const D_V: usize = 3;
 const D_E: usize = 2;
 
-fn setup(mask: Option<Vec<f32>>) -> (FixedGeometry, NodeState) {
+fn setup(mask: Option<Vec<Scalar>>) -> (FixedGeometry, NodeState) {
     let mut rng = Rng::new(7);
     let graph = tiny_graph();
     let e = graph.num_edges();
@@ -27,7 +28,7 @@ fn setup(mask: Option<Vec<f32>>) -> (FixedGeometry, NodeState) {
     (geo, z)
 }
 
-fn dense_f(geo: &FixedGeometry) -> ndarray::Array2<f32> {
+fn dense_f(geo: &FixedGeometry) -> ndarray::Array2<Scalar> {
     let (fu, fv) = maps_to_blocks(&geo.restriction_maps);
     dense_coboundary(
         &geo.graph.edges,
@@ -46,7 +47,7 @@ fn edge_residuals_match_dense_coboundary() {
     let r = geo.edge_residuals(&z);
     for b in 0..B {
         let fz = f.dot(&flatten_batch(&z, b)); // [E * d_e]
-        let r_flat: Array1<f32> = r
+        let r_flat: Array1<Scalar> = r
             .slice(ndarray::s![.., b, ..])
             .iter()
             .cloned()
@@ -74,7 +75,7 @@ fn energy_identities() {
     let (geo, z) = setup(None);
     // energy == 1/2 sum r^2
     let r = geo.edge_residuals(&z);
-    let half_r2: f32 = 0.5 * r.iter().map(|&x| x * x).sum::<f32>();
+    let half_r2: Scalar = 0.5 * r.iter().map(|&x| x * x).sum::<Scalar>();
     let energy = geo.energy(&z);
     assert!(
         (energy - half_r2).abs() <= 1e-4 * half_r2.abs().max(1.0),
@@ -83,7 +84,7 @@ fn energy_identities() {
     // energy == 1/2 z^T L z (summed over batch)
     let mut lz = NodeState::zeros(z.dim());
     geo.laplacian_apply(&z, &mut lz);
-    let ztlz: f32 = z.iter().zip(lz.iter()).map(|(&a, &b)| a * b).sum();
+    let ztlz: Scalar = z.iter().zip(lz.iter()).map(|(&a, &b)| a * b).sum();
     assert!(
         (energy - 0.5 * ztlz).abs() <= 1e-3 * energy.abs().max(1.0),
         "energy {energy} != 1/2 z^T L z {}",
@@ -102,13 +103,13 @@ fn laplacian_symmetric_psd_rayleigh() {
         let mut lb = NodeState::zeros(b.dim());
         geo.laplacian_apply(&a, &mut la);
         geo.laplacian_apply(&b, &mut lb);
-        let a_lb: f32 = a.iter().zip(lb.iter()).map(|(&x, &y)| x * y).sum();
-        let la_b: f32 = la.iter().zip(b.iter()).map(|(&x, &y)| x * y).sum();
+        let a_lb: Scalar = a.iter().zip(lb.iter()).map(|(&x, &y)| x * y).sum();
+        let la_b: Scalar = la.iter().zip(b.iter()).map(|(&x, &y)| x * y).sum();
         assert!(
             (a_lb - la_b).abs() <= 1e-3 * a_lb.abs().max(1.0),
             "L not symmetric: <a, Lb> = {a_lb}, <La, b> = {la_b}"
         );
-        let a_la: f32 = a.iter().zip(la.iter()).map(|(&x, &y)| x * y).sum();
+        let a_la: Scalar = a.iter().zip(la.iter()).map(|(&x, &y)| x * y).sum();
         assert!(a_la >= -1e-5, "L not PSD: Rayleigh <a, La> = {a_la}");
     }
 }
@@ -150,6 +151,39 @@ fn edge_mask_applied_once_not_squared() {
 }
 
 #[test]
+fn batch_axis_is_independent_and_bitwise_equal() {
+    // The `parallel` feature fans the geometry ops over the batch axis; this is
+    // numerically identical ONLY because the Laplacian never mixes batch
+    // elements. Pin that invariant: the b-th slab of a full [N, B, d_v] run must
+    // equal — bit for bit — an independent single-batch [N, 1, d_v] run. Holds
+    // under the default, `parallel`, and `f64` builds alike.
+    let (geo, z) = setup(None);
+    let r_full = geo.edge_residuals(&z);
+    let mut l_full = NodeState::zeros(z.dim());
+    geo.laplacian_apply(&z, &mut l_full);
+    let crms_full = geo.consistency_rms(&z);
+
+    for b in 0..B {
+        let z_b: Array3<Scalar> = z.slice(s![.., b..b + 1, ..]).to_owned();
+        let r_b = geo.edge_residuals(&z_b);
+        let mut l_b = NodeState::zeros(z_b.dim());
+        geo.laplacian_apply(&z_b, &mut l_b);
+        let crms_b = geo.consistency_rms(&z_b);
+
+        for (&got, &want) in r_b.slice(s![.., 0, ..]).iter().zip(r_full.slice(s![.., b, ..]).iter()) {
+            assert_eq!(got, want,
+                "edge_residuals batch {b} slab must match single-batch run bitwise");
+        }
+        for (&got, &want) in l_b.slice(s![.., 0, ..]).iter().zip(l_full.slice(s![.., b, ..]).iter()) {
+            assert_eq!(got, want,
+                "laplacian_apply batch {b} slab must match single-batch run bitwise");
+        }
+        assert_eq!(crms_b[0], crms_full[b],
+            "consistency_rms batch {b} must match single-batch run bitwise");
+    }
+}
+
+#[test]
 fn consistency_rms_at_zero_is_sqrt_eps() {
     let (geo, _z) = setup(None);
     let z0 = NodeState::zeros((N, B, D_V));
@@ -170,13 +204,13 @@ fn consistency_rms_matches_manual_formula() {
     let (e, _b, d_e) = r.dim();
     let rms = geo.consistency_rms(&z);
     for bi in 0..B {
-        let mut acc = 0.0f32;
+        let mut acc = 0.0 as Scalar;
         for ei in 0..e {
             for di in 0..d_e {
                 acc += r[[ei, bi, di]] * r[[ei, bi, di]];
             }
         }
-        let expect = (acc / (e * d_e) as f32 + CONSISTENCY_EPS).sqrt();
+        let expect = (acc / (e * d_e) as Scalar + CONSISTENCY_EPS).sqrt();
         assert!(
             (rms[bi] - expect).abs() <= 1e-6,
             "consistency_rms[{bi}] = {}, expected {expect}",

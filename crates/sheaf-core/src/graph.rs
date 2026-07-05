@@ -7,6 +7,8 @@
 
 use ndarray::Array2;
 
+use crate::Scalar;
+
 /// Endpoint of an edge (which slot of the `[E, 2, ...]` axis).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Endpoint {
@@ -67,7 +69,7 @@ pub struct AgentGraph {
     /// oriented right/down by the grid edge builder.
     pub edges: Vec<[u32; 2]>,
     /// `[N, 2]` (y, x) agent-center positions (grid tasks). `None` for sudoku.
-    pub node_positions: Option<Array2<f32>>,
+    pub node_positions: Option<Array2<Scalar>>,
     /// `[E]` direction slot of the u-endpoint (index into the K base maps).
     pub dir_uv: Vec<u8>,
     /// `[E]` direction slot of the v-endpoint (direction of `(-dy, -dx)`).
@@ -83,7 +85,7 @@ impl AgentGraph {
     /// directional slot tables (`num_directions` in {4, 8}) and incidence CSR.
     pub fn new_grid(
         edges: Vec<[u32; 2]>,
-        node_positions: Array2<f32>,
+        node_positions: Array2<Scalar>,
         num_directions: usize,
     ) -> Self {
         assert_eq!(node_positions.ncols(), 2, "node_positions must be [N, 2] (y, x)");
@@ -138,7 +140,7 @@ impl AgentGraph {
 ///   nested-`where` order of the Python (NE, NW, N, SE, SW, S, E, W).
 ///
 /// North is "up" = smaller y, so `is_north = dy < 0`.
-pub fn compute_direction_index(dy: f32, dx: f32, num_directions: usize) -> u8 {
+pub fn compute_direction_index(dy: Scalar, dx: Scalar, num_directions: usize) -> u8 {
     let is_north = dy < 0.0;
     let is_south = dy > 0.0;
     let is_east = dx > 0.0;

@@ -21,6 +21,7 @@ use crate::solvers::{
     UnrolledCgParams,
 };
 use crate::tensor::NodeState;
+use crate::Scalar;
 
 /// Which x-update to run (selected by config `x_solver`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -41,9 +42,9 @@ pub enum XSolverKind {
 /// carried for convenience and must agree (debug-asserted by the drivers).
 #[derive(Debug, Clone, Copy)]
 pub struct AdmmParams {
-    pub rho: f32,
-    pub alpha: f32,
-    pub gamma: f32,
+    pub rho: Scalar,
+    pub alpha: Scalar,
+    pub gamma: Scalar,
     pub k: usize,
 }
 
@@ -61,15 +62,15 @@ pub struct AdmmState {
 /// Per-iteration ADMM trajectory (oldest first). Mirrors Python `ADMMHistory`.
 #[derive(Debug, Clone)]
 pub struct AdmmHistory {
-    pub x: Array4<f32>,               // [K, N, B, d_v]
-    pub z: Array4<f32>,               // [K, N, B, d_v]
-    pub y: Array4<f32>,               // [K, N, B, d_v]
+    pub x: Array4<Scalar>,               // [K, N, B, d_v]
+    pub z: Array4<Scalar>,               // [K, N, B, d_v]
+    pub y: Array4<Scalar>,               // [K, N, B, d_v]
     /// `||x_relaxed - z||_2` over d_v, per agent.
-    pub primal_res: Array3<f32>,      // [K, N, B]
+    pub primal_res: Array3<Scalar>,      // [K, N, B]
     /// `rho * ||z - z_prev||_2` over d_v, per agent.
-    pub dual_res: Array3<f32>,        // [K, N, B]
+    pub dual_res: Array3<Scalar>,        // [K, N, B]
     /// Geometry `consistency_rms(z)` per iteration.
-    pub consistency_rms: Array2<f32>, // [K, B]
+    pub consistency_rms: Array2<Scalar>, // [K, B]
 }
 
 /// One ADMM step. Returns the new state and `x_relaxed` (needed by the
@@ -80,8 +81,8 @@ fn admm_step(
     geometry: &dyn SheafGeometry,
     x_solver: XSolverKind,
     z_params: &UnrolledCgParams,
-    rho: f32,
-    alpha: f32,
+    rho: Scalar,
+    alpha: Scalar,
 ) -> (AdmmState, NodeState) {
     let z_prev = &state.z;
     let x = match x_solver {
@@ -184,8 +185,8 @@ pub fn run_admm_history(
         // (L2 norms over the trailing d_v axis, per agent/batch).
         for ni in 0..n {
             for bi in 0..b {
-                let mut p_acc = 0.0f32;
-                let mut d_acc = 0.0f32;
+                let mut p_acc = 0.0 as Scalar;
+                let mut d_acc = 0.0 as Scalar;
                 for di in 0..d_v {
                     let pd = x_relaxed[[ni, bi, di]] - state.z[[ni, bi, di]];
                     p_acc += pd * pd;

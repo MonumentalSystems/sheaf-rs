@@ -19,6 +19,7 @@ use ndarray::{s, Array3, Array4};
 use sheaf_core::admm::{run_admm_history, AdmmParams, XSolverKind};
 use sheaf_core::geometry::FixedGeometry;
 use sheaf_core::solvers::{EncoderOutput, Objective, UnrolledCgParams, ZMode};
+use sheaf_core::Scalar;
 
 const N: usize = 4;
 const B: usize = 2;
@@ -28,20 +29,20 @@ const K: usize = 12;
 
 /// `sin(7*i0 + 3*i1 + 5*i2 + 1*i3 + off) * scale`, all in f32 — mirrors the
 /// generator in the Python golden script exactly.
-fn arr3(shape: (usize, usize, usize), off: f32, scale: f32) -> Array3<f32> {
+fn arr3(shape: (usize, usize, usize), off: Scalar, scale: Scalar) -> Array3<Scalar> {
     Array3::from_shape_fn(shape, |(i, j, k)| {
-        ((i as f32) * 7.0 + (j as f32) * 3.0 + (k as f32) * 5.0 + off).sin() * scale
+        ((i as Scalar) * 7.0 + (j as Scalar) * 3.0 + (k as Scalar) * 5.0 + off).sin() * scale
     })
 }
 
-fn arr4(shape: (usize, usize, usize, usize), off: f32, scale: f32) -> Array4<f32> {
+fn arr4(shape: (usize, usize, usize, usize), off: Scalar, scale: Scalar) -> Array4<Scalar> {
     Array4::from_shape_fn(shape, |(i, j, k, l)| {
-        ((i as f32) * 7.0 + (j as f32) * 3.0 + (k as f32) * 5.0 + (l as f32) + off).sin() * scale
+        ((i as Scalar) * 7.0 + (j as Scalar) * 3.0 + (k as Scalar) * 5.0 + (l as Scalar) + off).sin() * scale
     })
 }
 
 #[rustfmt::skip]
-const GOLDEN_CRMS: [[f32; 2]; K] = [
+const GOLDEN_CRMS: [[Scalar; 2]; K] = [
     [0.00919435, 0.01890177],
     [0.01879668, 0.03304939],
     [0.02738254, 0.04211304],
@@ -57,19 +58,19 @@ const GOLDEN_CRMS: [[f32; 2]; K] = [
 ];
 
 #[rustfmt::skip]
-const GOLDEN_PRIMAL_MEAN: [f32; K] = [
+const GOLDEN_PRIMAL_MEAN: [Scalar; K] = [
     0.51889408, 0.43645972, 0.31770390, 0.21610615, 0.15252194, 0.11061320,
     0.08259733, 0.06315878, 0.05011985, 0.04141647, 0.03540945, 0.03118247,
 ];
 
 #[rustfmt::skip]
-const GOLDEN_DUAL_MEAN: [f32; K] = [
+const GOLDEN_DUAL_MEAN: [Scalar; K] = [
     0.20350307, 0.02242500, 0.01798391, 0.01753942, 0.01210922, 0.00821304,
     0.00547488, 0.00405881, 0.00300545, 0.00227897, 0.00174620, 0.00136060,
 ];
 
 #[rustfmt::skip]
-const GOLDEN_FINAL_X: [f32; N * B * D_V] = [
+const GOLDEN_FINAL_X: [Scalar; N * B * D_V] = [
     0.00000000, 0.00000000, 0.00000000, 0.14396203, 0.14924218, 0.00000000,
     0.00000000, 0.00000000, 0.12485839, 0.00000000, 0.00000000, 0.25240767,
     0.00000000, 0.16065405, 0.00000000, 0.00000000, 0.26753190, 0.00000000,
@@ -79,7 +80,7 @@ const GOLDEN_FINAL_X: [f32; N * B * D_V] = [
 ];
 
 #[rustfmt::skip]
-const GOLDEN_FINAL_Z: [f32; N * B * D_V] = [
+const GOLDEN_FINAL_Z: [Scalar; N * B * D_V] = [
     0.01769522, -0.00926296, -0.02770185, 0.12328799, 0.11897113, -0.03900445,
     -0.01187766, 0.02616949, 0.13634802, -0.00154555, -0.01316038, 0.23973314,
     -0.01421241, 0.15029313, 0.00301864, 0.01362147, 0.26670611, -0.01143403,
@@ -89,7 +90,7 @@ const GOLDEN_FINAL_Z: [f32; N * B * D_V] = [
 ];
 
 #[rustfmt::skip]
-const GOLDEN_FINAL_Y: [f32; N * B * D_V] = [
+const GOLDEN_FINAL_Y: [Scalar; N * B * D_V] = [
     -1.58825135, -0.37072557, 1.18764317, 1.65409887, 1.52269292, 1.63002646,
     0.23871952, -1.37206399, -1.06775320, -0.34217680, 0.69799584, 1.09643352,
     0.82194507, 1.62445092, 0.93344450, -0.61576724, 0.24548453, 0.33283144,
@@ -108,7 +109,7 @@ fn golden_trajectory_matches_python_reference() {
     let z_init = arr3((N, B, D_V), 0.7, 0.5);
     let q_diag = arr3((N, B, D_V), 1.3, 0.5).mapv(|v| v.abs() + 0.1);
     let q = arr3((N, B, D_V), 2.1, 0.5);
-    let l1 = arr3((N, B, D_V), 3.3, 0.05).mapv(f32::abs);
+    let l1 = arr3((N, B, D_V), 3.3, 0.05).mapv(Scalar::abs);
     let upper = arr3((N, B, D_V), 4.7, 0.5).mapv(|v| v.abs() + 0.5);
 
     let enc = EncoderOutput {

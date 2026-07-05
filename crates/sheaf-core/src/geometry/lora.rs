@@ -8,6 +8,7 @@ use ndarray::{s, Array1, Array2, Array4, Array5, ArrayView1, ArrayView2};
 
 use crate::graph::AgentGraph;
 use crate::tensor::{EdgeState, NodeState, RestrictionMaps};
+use crate::Scalar;
 
 use super::SheafGeometry;
 
@@ -26,26 +27,26 @@ pub struct LoraGeometry {
     pub graph: Arc<AgentGraph>,
     /// Base maps R, `[E, 2, d_e, d_v]`.
     pub restriction_maps: RestrictionMaps,
-    pub lora_alpha: f32,
-    pub a_u_edge: Array4<f32>, // [E, B, d_e, r]
-    pub a_v_edge: Array4<f32>, // [E, B, d_e, r]
-    pub b_u_edge: Array4<f32>, // [E, B, d_v, r]
-    pub b_v_edge: Array4<f32>, // [E, B, d_v, r]
-    pub gate_u_edge: Option<Array2<f32>>, // [E, B]
-    pub gate_v_edge: Option<Array2<f32>>, // [E, B]
-    pub edge_mask: Option<Vec<f32>>,      // [E]; applied once, in edge_residuals
+    pub lora_alpha: Scalar,
+    pub a_u_edge: Array4<Scalar>, // [E, B, d_e, r]
+    pub a_v_edge: Array4<Scalar>, // [E, B, d_e, r]
+    pub b_u_edge: Array4<Scalar>, // [E, B, d_v, r]
+    pub b_v_edge: Array4<Scalar>, // [E, B, d_v, r]
+    pub gate_u_edge: Option<Array2<Scalar>>, // [E, B]
+    pub gate_v_edge: Option<Array2<Scalar>>, // [E, B]
+    pub edge_mask: Option<Vec<Scalar>>,      // [E]; applied once, in edge_residuals
 }
 
 /// Effective map applied to one endpoint: `(R + scale gate A B^T) z_e`.
 /// Factored — two rank-r matvecs; the gate multiplies the low-rank term.
 fn apply_endpoint(
-    r_base: ArrayView2<f32>,  // [d_e, d_v]
-    a: ArrayView2<f32>,       // [d_e, r]
-    b: ArrayView2<f32>,       // [d_v, r]
-    gate: Option<f32>,
-    z_e: ArrayView1<f32>,     // [d_v]
-    scale: f32,
-) -> Array1<f32> {
+    r_base: ArrayView2<Scalar>,  // [d_e, d_v]
+    a: ArrayView2<Scalar>,       // [d_e, r]
+    b: ArrayView2<Scalar>,       // [d_v, r]
+    gate: Option<Scalar>,
+    z_e: ArrayView1<Scalar>,     // [d_v]
+    scale: Scalar,
+) -> Array1<Scalar> {
     let rz = r_base.dot(&z_e); // [d_e]
     let btz = b.t().dot(&z_e); // [r]
     let mut abtz = a.dot(&btz); // [d_e]
@@ -58,13 +59,13 @@ fn apply_endpoint(
 /// Adjoint of `apply_endpoint`: `(R + scale gate A B^T)^T r`.
 /// The gate multiplies the `A^T r` side (lora.py `_adjoint_endpoint`).
 fn adjoint_endpoint(
-    r_base: ArrayView2<f32>,  // [d_e, d_v]
-    a: ArrayView2<f32>,       // [d_e, r]
-    b: ArrayView2<f32>,       // [d_v, r]
-    gate: Option<f32>,
-    r_e: ArrayView1<f32>,     // [d_e]
-    scale: f32,
-) -> Array1<f32> {
+    r_base: ArrayView2<Scalar>,  // [d_e, d_v]
+    a: ArrayView2<Scalar>,       // [d_e, r]
+    b: ArrayView2<Scalar>,       // [d_v, r]
+    gate: Option<Scalar>,
+    r_e: ArrayView1<Scalar>,     // [d_e]
+    scale: Scalar,
+) -> Array1<Scalar> {
     let contrib = r_base.t().dot(&r_e); // [d_v]
     let mut atr = a.t().dot(&r_e); // [r]
     if let Some(g) = gate {
@@ -76,8 +77,8 @@ fn adjoint_endpoint(
 
 impl LoraGeometry {
     /// `scale = lora_alpha / rank` (rank = trailing axis of the A factors).
-    pub fn scale(&self) -> f32 {
-        self.lora_alpha / self.a_u_edge.shape()[3] as f32
+    pub fn scale(&self) -> Scalar {
+        self.lora_alpha / self.a_u_edge.shape()[3] as Scalar
     }
 
     /// Directional (grid) LoRA geometry: gather per-node factors
@@ -87,10 +88,10 @@ impl LoraGeometry {
     pub fn create_directional(
         graph: Arc<AgentGraph>,
         restriction_maps: RestrictionMaps,
-        a: &Array5<f32>,
-        b: &Array5<f32>,
-        gate: Option<&ndarray::Array3<f32>>,
-        lora_alpha: f32,
+        a: &Array5<Scalar>,
+        b: &Array5<Scalar>,
+        gate: Option<&ndarray::Array3<Scalar>>,
+        lora_alpha: Scalar,
     ) -> Self {
         let e_cnt = graph.num_edges();
         assert_eq!(
@@ -148,12 +149,14 @@ impl SheafGeometry for LoraGeometry {
         let d_e = self.restriction_maps.shape()[2];
         let e_cnt = self.graph.num_edges();
         let scale = self.scale();
-        let mut r = EdgeState::zeros((e_cnt, b, d_e));
-        for (ei, &[u, v]) in self.graph.edges.iter().enumerate() {
-            let (u, v) = (u as usize, v as usize);
-            let r_u = self.restriction_maps.slice(s![ei, 0, .., ..]);
-            let r_v = self.restriction_maps.slice(s![ei, 1, .., ..]);
-            for bi in 0..b {
+        // Batch axis is embarrassingly parallel; each batch element owns its
+        // `[E, d_e]` slab and runs the identical factored per-edge arithmetic.
+        let slabs = crate::par::map_batches(b, |bi| {
+            let mut r_b = Array2::<Scalar>::zeros((e_cnt, d_e));
+            for (ei, &[u, v]) in self.graph.edges.iter().enumerate() {
+                let (u, v) = (u as usize, v as usize);
+                let r_u = self.restriction_maps.slice(s![ei, 0, .., ..]);
+                let r_v = self.restriction_maps.slice(s![ei, 1, .., ..]);
                 let fz_u = apply_endpoint(
                     r_u,
                     self.a_u_edge.slice(s![ei, bi, .., ..]),
@@ -174,8 +177,13 @@ impl SheafGeometry for LoraGeometry {
                 if let Some(mask) = &self.edge_mask {
                     r_eb *= mask[ei];
                 }
-                r.slice_mut(s![ei, bi, ..]).assign(&r_eb);
+                r_b.slice_mut(s![ei, ..]).assign(&r_eb);
             }
+            r_b
+        });
+        let mut r = EdgeState::zeros((e_cnt, b, d_e));
+        for (bi, slab) in slabs.iter().enumerate() {
+            r.slice_mut(s![.., bi, ..]).assign(slab);
         }
         r
     }
@@ -183,15 +191,17 @@ impl SheafGeometry for LoraGeometry {
     fn laplacian_apply(&self, z: &NodeState, out: &mut NodeState) {
         assert_eq!(out.dim(), z.dim());
         let r = self.edge_residuals(z); // [E, B, d_e]
-        out.fill(0.0);
-        let b = r.dim().1;
+        let (n, b, d_v) = z.dim();
         let scale = self.scale();
         // Adjoint per endpoint, scatter-add +contrib at u, -contrib at v.
-        for (ei, &[u, v]) in self.graph.edges.iter().enumerate() {
-            let (u, v) = (u as usize, v as usize);
-            let r_u = self.restriction_maps.slice(s![ei, 0, .., ..]);
-            let r_v = self.restriction_maps.slice(s![ei, 1, .., ..]);
-            for bi in 0..b {
+        // Parallel over B: each batch owns a disjoint `[N, d_v]` slab and its
+        // edge-order accumulation is preserved, so the result is identical.
+        let slabs = crate::par::map_batches(b, |bi| {
+            let mut out_b = Array2::<Scalar>::zeros((n, d_v));
+            for (ei, &[u, v]) in self.graph.edges.iter().enumerate() {
+                let (u, v) = (u as usize, v as usize);
+                let r_u = self.restriction_maps.slice(s![ei, 0, .., ..]);
+                let r_v = self.restriction_maps.slice(s![ei, 1, .., ..]);
                 let r_eb = r.slice(s![ei, bi, ..]);
                 let contrib_u = adjoint_endpoint(
                     r_u,
@@ -209,11 +219,18 @@ impl SheafGeometry for LoraGeometry {
                     r_eb,
                     scale,
                 );
-                let mut out_u = out.slice_mut(s![u, bi, ..]);
-                out_u += &contrib_u;
-                let mut out_v = out.slice_mut(s![v, bi, ..]);
+                {
+                    let mut out_u = out_b.slice_mut(s![u, ..]);
+                    out_u += &contrib_u;
+                }
+                let mut out_v = out_b.slice_mut(s![v, ..]);
                 out_v -= &contrib_v;
             }
+            out_b
+        });
+        out.fill(0.0);
+        for (bi, slab) in slabs.iter().enumerate() {
+            out.slice_mut(s![.., bi, ..]).assign(slab);
         }
     }
 }

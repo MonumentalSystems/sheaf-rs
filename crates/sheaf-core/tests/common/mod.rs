@@ -7,6 +7,7 @@ use ndarray::{Array1, Array2, Array3, Array4, Array5, Dimension, s};
 
 use sheaf_core::graph::AgentGraph;
 use sheaf_core::tensor::{NodeState, RestrictionMaps};
+use sheaf_core::Scalar;
 
 /// Tiny deterministic xorshift64* RNG — no dev-dep needed, seeds are pinned.
 pub struct Rng(u64);
@@ -25,44 +26,45 @@ impl Rng {
         x.wrapping_mul(0x2545F4914F6CDD1D)
     }
 
-    /// Uniform in [-1, 1).
-    pub fn f32(&mut self) -> f32 {
-        let u = (self.next_u64() >> 40) as f32 / (1u64 << 24) as f32; // [0, 1)
+    /// Uniform in [-1, 1). (Named `scalar` — routes through the crate `Scalar`
+    /// so the same helpers compile under both the default f32 and `f64` builds.)
+    pub fn scalar(&mut self) -> Scalar {
+        let u = (self.next_u64() >> 40) as Scalar / (1u64 << 24) as Scalar; // [0, 1)
         2.0 * u - 1.0
     }
 
     /// Uniform in [lo, hi).
-    pub fn f32_in(&mut self, lo: f32, hi: f32) -> f32 {
-        lo + (self.f32() * 0.5 + 0.5) * (hi - lo)
+    pub fn scalar_in(&mut self, lo: Scalar, hi: Scalar) -> Scalar {
+        lo + (self.scalar() * 0.5 + 0.5) * (hi - lo)
     }
 
-    pub fn array1(&mut self, n: usize) -> Array1<f32> {
-        Array1::from_shape_fn(n, |_| self.f32())
+    pub fn array1(&mut self, n: usize) -> Array1<Scalar> {
+        Array1::from_shape_fn(n, |_| self.scalar())
     }
 
-    pub fn array2(&mut self, d: (usize, usize)) -> Array2<f32> {
-        Array2::from_shape_fn(d, |_| self.f32())
+    pub fn array2(&mut self, d: (usize, usize)) -> Array2<Scalar> {
+        Array2::from_shape_fn(d, |_| self.scalar())
     }
 
-    pub fn array3(&mut self, d: (usize, usize, usize)) -> Array3<f32> {
-        Array3::from_shape_fn(d, |_| self.f32())
+    pub fn array3(&mut self, d: (usize, usize, usize)) -> Array3<Scalar> {
+        Array3::from_shape_fn(d, |_| self.scalar())
     }
 
-    pub fn array4(&mut self, d: (usize, usize, usize, usize)) -> Array4<f32> {
-        Array4::from_shape_fn(d, |_| self.f32())
+    pub fn array4(&mut self, d: (usize, usize, usize, usize)) -> Array4<Scalar> {
+        Array4::from_shape_fn(d, |_| self.scalar())
     }
 
-    pub fn array5(&mut self, d: (usize, usize, usize, usize, usize)) -> Array5<f32> {
-        Array5::from_shape_fn(d, |_| self.f32())
+    pub fn array5(&mut self, d: (usize, usize, usize, usize, usize)) -> Array5<Scalar> {
+        Array5::from_shape_fn(d, |_| self.scalar())
     }
 }
 
 /// Elementwise |a - b| <= atol + rtol * |b| with shape check.
 pub fn assert_close<D: Dimension>(
-    a: &ndarray::Array<f32, D>,
-    b: &ndarray::Array<f32, D>,
-    atol: f32,
-    rtol: f32,
+    a: &ndarray::Array<Scalar, D>,
+    b: &ndarray::Array<Scalar, D>,
+    atol: Scalar,
+    rtol: Scalar,
     what: &str,
 ) {
     assert_eq!(a.shape(), b.shape(), "{what}: shape mismatch");
@@ -79,12 +81,12 @@ pub fn assert_close<D: Dimension>(
 /// block row e carries +mask*F_u at u's columns and -mask*F_v at v's columns.
 pub fn dense_coboundary(
     edges: &[[u32; 2]],
-    fu: &[Array2<f32>],
-    fv: &[Array2<f32>],
-    mask: Option<&[f32]>,
+    fu: &[Array2<Scalar>],
+    fv: &[Array2<Scalar>],
+    mask: Option<&[Scalar]>,
     n: usize,
     d_v: usize,
-) -> Array2<f32> {
+) -> Array2<Scalar> {
     let e_cnt = edges.len();
     let d_e = fu[0].nrows();
     let mut f = Array2::zeros((e_cnt * d_e, n * d_v));
@@ -101,12 +103,12 @@ pub fn dense_coboundary(
 }
 
 /// Flatten one batch element of a node state to `[N * d_v]` (row-major).
-pub fn flatten_batch(z: &NodeState, b: usize) -> Array1<f32> {
+pub fn flatten_batch(z: &NodeState, b: usize) -> Array1<Scalar> {
     z.slice(s![.., b, ..]).iter().cloned().collect()
 }
 
 /// Inverse of `flatten_batch` into batch slot `b` of `out`.
-pub fn unflatten_batch(flat: &Array1<f32>, out: &mut NodeState, b: usize) {
+pub fn unflatten_batch(flat: &Array1<Scalar>, out: &mut NodeState, b: usize) {
     let (n, _bsz, d_v) = out.dim();
     for ni in 0..n {
         for di in 0..d_v {
@@ -133,12 +135,12 @@ pub fn grid_2x2_8way() -> Arc<AgentGraph> {
 }
 
 /// Random restriction maps `[E, 2, d_e, d_v]`, scaled to keep L well-behaved.
-pub fn random_maps(rng: &mut Rng, e: usize, d_e: usize, d_v: usize, scale: f32) -> RestrictionMaps {
-    Array4::from_shape_fn((e, 2, d_e, d_v), |_| scale * rng.f32())
+pub fn random_maps(rng: &mut Rng, e: usize, d_e: usize, d_v: usize, scale: Scalar) -> RestrictionMaps {
+    Array4::from_shape_fn((e, 2, d_e, d_v), |_| scale * rng.scalar())
 }
 
 /// Extract per-edge endpoint blocks (F_u, F_v) from `[E, 2, d_e, d_v]` maps.
-pub fn maps_to_blocks(maps: &RestrictionMaps) -> (Vec<Array2<f32>>, Vec<Array2<f32>>) {
+pub fn maps_to_blocks(maps: &RestrictionMaps) -> (Vec<Array2<Scalar>>, Vec<Array2<Scalar>>) {
     let e = maps.shape()[0];
     let mut fu = Vec::with_capacity(e);
     let mut fv = Vec::with_capacity(e);

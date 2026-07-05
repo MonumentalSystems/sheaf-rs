@@ -9,15 +9,16 @@ use common::*;
 use ndarray::Array3;
 use sheaf_core::solvers::{diagonal_prox_solve, simple_solve, soft_threshold, Objective};
 use sheaf_core::tensor::NodeState;
+use sheaf_core::Scalar;
 
 const N: usize = 3;
 const B: usize = 2;
 const D: usize = 4;
-const RHO: f32 = 0.25;
+const RHO: Scalar = 0.25;
 
 /// Strictly positive diagonal curvature (mimics softplus + q_epsilon heads).
 fn positive_diag(rng: &mut Rng) -> NodeState {
-    Array3::from_shape_fn((N, B, D), |_| rng.f32().abs() + 0.1 + 1e-4)
+    Array3::from_shape_fn((N, B, D), |_| rng.scalar().abs() + 0.1 + 1e-4)
 }
 
 #[test]
@@ -62,7 +63,7 @@ fn lasso_subgradient_optimality() {
     let q = rng.array3((N, B, D));
     let z = rng.array3((N, B, D));
     let y = rng.array3((N, B, D));
-    let l1 = 0.3f32; // large enough that some coordinates land at 0
+    let l1: Scalar = 0.3; // large enough that some coordinates land at 0
     let obj = Objective::Lasso { q_diag: q_diag.clone(), q: q.clone(), l1 };
     let x = diagonal_prox_solve(&z, &y, RHO, &obj);
     let mut zeros = 0;
@@ -109,8 +110,8 @@ fn l1box_respects_box_and_stationarity_in_interior() {
     let q = rng.array3((N, B, D));
     let z = rng.array3((N, B, D));
     let y = rng.array3((N, B, D));
-    let l1 = Array3::from_shape_fn((N, B, D), |_| rng.f32().abs() * 0.2);
-    let upper = Array3::from_shape_fn((N, B, D), |_| rng.f32().abs() * 0.8 + 0.05);
+    let l1 = Array3::from_shape_fn((N, B, D), |_| rng.scalar().abs() * 0.2);
+    let upper = Array3::from_shape_fn((N, B, D), |_| rng.scalar().abs() * 0.8 + 0.05);
     let obj = Objective::L1Box {
         q_diag: q_diag.clone(),
         q: q.clone(),
@@ -163,7 +164,7 @@ fn simple_solver_identity_and_limits() {
     let z = rng.array3((N, B, D));
     let y = rng.array3((N, B, D));
     let h = rng.array3((N, B, D));
-    let beta = 0.7f32;
+    let beta: Scalar = 0.7;
     let x = simple_solve(&z, &y, RHO, &h, beta);
     // (beta + rho) x == beta h + rho (z - y)
     for (idx, &xi) in x.indexed_iter() {

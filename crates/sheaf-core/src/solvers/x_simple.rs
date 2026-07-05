@@ -5,8 +5,9 @@
 //! uses it, but it is trivial and pins a §5.1 property test.
 
 use crate::tensor::NodeState;
+use crate::Scalar;
 
-pub fn simple_solve(z: &NodeState, y: &NodeState, rho: f32, h: &NodeState, beta: f32) -> NodeState {
+pub fn simple_solve(z: &NodeState, y: &NodeState, rho: Scalar, h: &NodeState, beta: Scalar) -> NodeState {
     assert_eq!(h.dim(), z.dim(), "h must be [N, B, d_v]");
     let denom = beta + rho;
     let mut x = NodeState::zeros(z.dim());
