@@ -15,3 +15,7 @@ sheaf-nn = { workspace = true }
 [[bin]]
 name = "parity_check"
 path = "src/bin/parity_check.rs"
+
+[[bin]]
+name = "maze_demo"
+path = "src/bin/maze_demo.rs"

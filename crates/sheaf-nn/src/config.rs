@@ -49,6 +49,12 @@ pub struct ExportedConfig {
     pub model: ModelConfig,
     pub task: TaskConfig,
     pub baked: BakedScalars,
+    /// Optional exporter provenance flag: `Some(true)` iff the checkpoint was
+    /// trained. The current exporter does not write it (the shipped goldens
+    /// are seed-0 random init — see goldens/maze/NOTES.md), so consumers must
+    /// treat `None` as not-known-trained and label output honestly.
+    #[serde(default)]
+    pub trained: Option<bool>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
