@@ -4,9 +4,6 @@
 //! Ports `sheaf_admm.data.{views,build_maze}` plus the loader side of
 //! `tools/export_weights.py`. Golden fixture layout: goldens/CONTRACT.md.
 
-// Scaffold phase: stub bodies are `todo!()`. Remove this allow as modules land.
-#![allow(unused_variables, dead_code)]
-
 pub mod mazegen;
 pub mod npz;
 pub mod views;

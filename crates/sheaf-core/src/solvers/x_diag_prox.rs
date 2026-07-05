@@ -16,9 +16,18 @@ use crate::solvers::Objective;
 use crate::tensor::NodeState;
 
 /// `soft_threshold(x, th) = sign(x) * max(|x| - th, 0)`.
+///
+/// Sign follows `jnp.sign` exactly (`sign(0) = 0`), not `f32::signum`.
 #[inline]
 pub fn soft_threshold(x: f32, threshold: f32) -> f32 {
-    todo!()
+    let sign = if x > 0.0 {
+        1.0
+    } else if x < 0.0 {
+        -1.0
+    } else {
+        0.0
+    };
+    sign * (x.abs() - threshold).max(0.0)
 }
 
 /// Solve the diagonal-prox x-update at `v = z - y`.
@@ -32,5 +41,48 @@ pub fn diagonal_prox_solve(
     rho: f32,
     objective: &Objective,
 ) -> NodeState {
-    todo!()
+    // (q_diag, q, scalar l1, per-dim l1, lower, per-dim upper).
+    // l2 = 0 for every shipped config; lower is a scalar (0 or -inf).
+    let (q_diag, q, l1_scalar, l1, lower, upper): (
+        &NodeState,
+        &NodeState,
+        f32,
+        Option<&NodeState>,
+        f32,
+        Option<&NodeState>,
+    ) = match objective {
+        Objective::Simple { .. } => {
+            panic!("diagonal_prox_solve called with Objective::Simple; use simple_solve")
+        }
+        Objective::Quadratic { q_diag, q } => {
+            (q_diag, q, 0.0, None, f32::NEG_INFINITY, None)
+        }
+        Objective::Lasso { q_diag, q, l1 } => (q_diag, q, *l1, None, f32::NEG_INFINITY, None),
+        Objective::NonNeg { q_diag, q } => (q_diag, q, 0.0, None, 0.0, None),
+        Objective::L1Box { q_diag, q, l1, upper } => (q_diag, q, 0.0, Some(l1), 0.0, Some(upper)),
+    };
+
+    let dim = z.dim();
+    assert_eq!(q_diag.dim(), dim, "q_diag must be [N, B, d_v]");
+    assert_eq!(q.dim(), dim, "q must be [N, B, d_v]");
+
+    let (n, b, d) = dim;
+    let mut x = NodeState::zeros(dim);
+    for ni in 0..n {
+        for bi in 0..b {
+            for di in 0..d {
+                let idx = [ni, bi, di];
+                let v = z[idx] - y[idx];
+                let a = q_diag[idx] + rho; // + l2 (= 0)
+                let t = (rho * v - q[idx]) / a;
+                let l1_here = l1.map_or(l1_scalar, |m| m[idx]);
+                let xt = soft_threshold(t, l1_here / a);
+                let hi = upper.map_or(f32::INFINITY, |m| m[idx]);
+                // jnp.clip: min(max(x, lower), upper) — clip AFTER the
+                // soft-threshold (ordering is load-bearing, see tests).
+                x[idx] = xt.max(lower).min(hi);
+            }
+        }
+    }
+    x
 }

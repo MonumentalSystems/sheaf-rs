@@ -1,0 +1,45 @@
+{
+  "model": {
+    "num_classes": 6,
+    "d_v": 10,
+    "d_e": 5,
+    "encoder_arch": "mlp_v2",
+    "enc_hidden_dim": 256,
+    "comm_norm_type": "layernorm",
+    "objective_mode": "l1box_diag",
+    "x_solver": "diagonal_prox",
+    "z_solver": "unrolled_cg",
+    "z_mode": "prox",
+    "gamma": 5.0,
+    "cg_iters": 5,
+    "tikhonov_eps": 1e-05,
+    "prox_init": "legacy",
+    "rm_sharing": "directional",
+    "rm_init": "orthonormal",
+    "rm_mode": "context",
+    "lora_rank": 4,
+    "lora_alpha": 1.0,
+    "lora_use_gate": false,
+    "lora_init_style": "standard",
+    "num_directions": 8,
+    "relaxation_alpha": 1.0,
+    "z_init": "h",
+    "q_epsilon": 0.0001,
+    "l1_init": 0.01,
+    "upper_init": 1.0,
+    "decoder_arch": "mlp_concat_v2",
+    "dec_hidden_dim": 256
+  },
+  "task": {
+    "task": "maze",
+    "patch_size": 3,
+    "stride": 2,
+    "connectivity": 8,
+    "num_classes": 6,
+    "k_eval": 100,
+    "loss_window": 4
+  },
+  "baked": {
+    "rho": 0.25
+  }
+}

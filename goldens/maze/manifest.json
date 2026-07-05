@@ -1,0 +1,690 @@
+{
+  "config": "maze_sheaf",
+  "generator": {
+    "upstream_commit": "1e2b5d648361802234348b0b1a7fb3a222128e7d",
+    "seed": 0,
+    "B": 2,
+    "K": 12,
+    "N": 81,
+    "E": 272,
+    "weights": "ema_params"
+  },
+  "safetensors": {
+    "ema_params/ConcatMLPDecoderV2_0/dense/bias": {
+      "shape": [
+        256
+      ],
+      "dtype": "F32"
+    },
+    "ema_params/ConcatMLPDecoderV2_0/dense/kernel": {
+      "shape": [
+        64,
+        256
+      ],
+      "dtype": "F32"
+    },
+    "ema_params/ConcatMLPDecoderV2_0/input_norm/scale": {
+      "shape": [
+        64
+      ],
+      "dtype": "F32"
+    },
+    "ema_params/ConcatMLPDecoderV2_0/output_dense/bias": {
+      "shape": [
+        54
+      ],
+      "dtype": "F32"
+    },
+    "ema_params/ConcatMLPDecoderV2_0/output_dense/kernel": {
+      "shape": [
+        256,
+        54
+      ],
+      "dtype": "F32"
+    },
+    "ema_params/MLPEncoderV2_0/comm_head/comm_dense/bias": {
+      "shape": [
+        10
+      ],
+      "dtype": "F32"
+    },
+    "ema_params/MLPEncoderV2_0/comm_head/comm_dense/kernel": {
+      "shape": [
+        256,
+        10
+      ],
+      "dtype": "F32"
+    },
+    "ema_params/MLPEncoderV2_0/comm_head/comm_norm/bias": {
+      "shape": [
+        10
+      ],
+      "dtype": "F32"
+    },
+    "ema_params/MLPEncoderV2_0/comm_head/comm_norm/scale": {
+      "shape": [
+        10
+      ],
+      "dtype": "F32"
+    },
+    "ema_params/MLPEncoderV2_0/dense/bias": {
+      "shape": [
+        256
+      ],
+      "dtype": "F32"
+    },
+    "ema_params/MLPEncoderV2_0/dense/kernel": {
+      "shape": [
+        54,
+        256
+      ],
+      "dtype": "F32"
+    },
+    "ema_params/MLPEncoderV2_0/input_norm/scale": {
+      "shape": [
+        54
+      ],
+      "dtype": "F32"
+    },
+    "ema_params/MLPEncoderV2_0/lora_A_dense/bias": {
+      "shape": [
+        160
+      ],
+      "dtype": "F32"
+    },
+    "ema_params/MLPEncoderV2_0/lora_A_dense/kernel": {
+      "shape": [
+        256,
+        160
+      ],
+      "dtype": "F32"
+    },
+    "ema_params/MLPEncoderV2_0/lora_B_dense/bias": {
+      "shape": [
+        320
+      ],
+      "dtype": "F32"
+    },
+    "ema_params/MLPEncoderV2_0/lora_B_dense/kernel": {
+      "shape": [
+        256,
+        320
+      ],
+      "dtype": "F32"
+    },
+    "ema_params/MLPEncoderV2_0/lora_pre_ln/bias": {
+      "shape": [
+        256
+      ],
+      "dtype": "F32"
+    },
+    "ema_params/MLPEncoderV2_0/lora_pre_ln/scale": {
+      "shape": [
+        256
+      ],
+      "dtype": "F32"
+    },
+    "ema_params/MLPEncoderV2_0/objective_heads/l1_weight_dense/bias": {
+      "shape": [
+        10
+      ],
+      "dtype": "F32"
+    },
+    "ema_params/MLPEncoderV2_0/objective_heads/l1_weight_dense/kernel": {
+      "shape": [
+        256,
+        10
+      ],
+      "dtype": "F32"
+    },
+    "ema_params/MLPEncoderV2_0/objective_heads/q_dense/bias": {
+      "shape": [
+        10
+      ],
+      "dtype": "F32"
+    },
+    "ema_params/MLPEncoderV2_0/objective_heads/q_dense/kernel": {
+      "shape": [
+        256,
+        10
+      ],
+      "dtype": "F32"
+    },
+    "ema_params/MLPEncoderV2_0/objective_heads/q_diag_dense/bias": {
+      "shape": [
+        10
+      ],
+      "dtype": "F32"
+    },
+    "ema_params/MLPEncoderV2_0/objective_heads/q_diag_dense/kernel": {
+      "shape": [
+        256,
+        10
+      ],
+      "dtype": "F32"
+    },
+    "ema_params/MLPEncoderV2_0/objective_heads/upper_bound_dense/bias": {
+      "shape": [
+        10
+      ],
+      "dtype": "F32"
+    },
+    "ema_params/MLPEncoderV2_0/objective_heads/upper_bound_dense/kernel": {
+      "shape": [
+        256,
+        10
+      ],
+      "dtype": "F32"
+    },
+    "ema_params/rho_raw": {
+      "shape": [],
+      "dtype": "F32"
+    },
+    "ema_params/rm/R_E": {
+      "shape": [
+        5,
+        10
+      ],
+      "dtype": "F32"
+    },
+    "ema_params/rm/R_N": {
+      "shape": [
+        5,
+        10
+      ],
+      "dtype": "F32"
+    },
+    "ema_params/rm/R_NE": {
+      "shape": [
+        5,
+        10
+      ],
+      "dtype": "F32"
+    },
+    "ema_params/rm/R_NW": {
+      "shape": [
+        5,
+        10
+      ],
+      "dtype": "F32"
+    },
+    "ema_params/rm/R_S": {
+      "shape": [
+        5,
+        10
+      ],
+      "dtype": "F32"
+    },
+    "ema_params/rm/R_SE": {
+      "shape": [
+        5,
+        10
+      ],
+      "dtype": "F32"
+    },
+    "ema_params/rm/R_SW": {
+      "shape": [
+        5,
+        10
+      ],
+      "dtype": "F32"
+    },
+    "ema_params/rm/R_W": {
+      "shape": [
+        5,
+        10
+      ],
+      "dtype": "F32"
+    },
+    "params/ConcatMLPDecoderV2_0/dense/bias": {
+      "shape": [
+        256
+      ],
+      "dtype": "F32"
+    },
+    "params/ConcatMLPDecoderV2_0/dense/kernel": {
+      "shape": [
+        64,
+        256
+      ],
+      "dtype": "F32"
+    },
+    "params/ConcatMLPDecoderV2_0/input_norm/scale": {
+      "shape": [
+        64
+      ],
+      "dtype": "F32"
+    },
+    "params/ConcatMLPDecoderV2_0/output_dense/bias": {
+      "shape": [
+        54
+      ],
+      "dtype": "F32"
+    },
+    "params/ConcatMLPDecoderV2_0/output_dense/kernel": {
+      "shape": [
+        256,
+        54
+      ],
+      "dtype": "F32"
+    },
+    "params/MLPEncoderV2_0/comm_head/comm_dense/bias": {
+      "shape": [
+        10
+      ],
+      "dtype": "F32"
+    },
+    "params/MLPEncoderV2_0/comm_head/comm_dense/kernel": {
+      "shape": [
+        256,
+        10
+      ],
+      "dtype": "F32"
+    },
+    "params/MLPEncoderV2_0/comm_head/comm_norm/bias": {
+      "shape": [
+        10
+      ],
+      "dtype": "F32"
+    },
+    "params/MLPEncoderV2_0/comm_head/comm_norm/scale": {
+      "shape": [
+        10
+      ],
+      "dtype": "F32"
+    },
+    "params/MLPEncoderV2_0/dense/bias": {
+      "shape": [
+        256
+      ],
+      "dtype": "F32"
+    },
+    "params/MLPEncoderV2_0/dense/kernel": {
+      "shape": [
+        54,
+        256
+      ],
+      "dtype": "F32"
+    },
+    "params/MLPEncoderV2_0/input_norm/scale": {
+      "shape": [
+        54
+      ],
+      "dtype": "F32"
+    },
+    "params/MLPEncoderV2_0/lora_A_dense/bias": {
+      "shape": [
+        160
+      ],
+      "dtype": "F32"
+    },
+    "params/MLPEncoderV2_0/lora_A_dense/kernel": {
+      "shape": [
+        256,
+        160
+      ],
+      "dtype": "F32"
+    },
+    "params/MLPEncoderV2_0/lora_B_dense/bias": {
+      "shape": [
+        320
+      ],
+      "dtype": "F32"
+    },
+    "params/MLPEncoderV2_0/lora_B_dense/kernel": {
+      "shape": [
+        256,
+        320
+      ],
+      "dtype": "F32"
+    },
+    "params/MLPEncoderV2_0/lora_pre_ln/bias": {
+      "shape": [
+        256
+      ],
+      "dtype": "F32"
+    },
+    "params/MLPEncoderV2_0/lora_pre_ln/scale": {
+      "shape": [
+        256
+      ],
+      "dtype": "F32"
+    },
+    "params/MLPEncoderV2_0/objective_heads/l1_weight_dense/bias": {
+      "shape": [
+        10
+      ],
+      "dtype": "F32"
+    },
+    "params/MLPEncoderV2_0/objective_heads/l1_weight_dense/kernel": {
+      "shape": [
+        256,
+        10
+      ],
+      "dtype": "F32"
+    },
+    "params/MLPEncoderV2_0/objective_heads/q_dense/bias": {
+      "shape": [
+        10
+      ],
+      "dtype": "F32"
+    },
+    "params/MLPEncoderV2_0/objective_heads/q_dense/kernel": {
+      "shape": [
+        256,
+        10
+      ],
+      "dtype": "F32"
+    },
+    "params/MLPEncoderV2_0/objective_heads/q_diag_dense/bias": {
+      "shape": [
+        10
+      ],
+      "dtype": "F32"
+    },
+    "params/MLPEncoderV2_0/objective_heads/q_diag_dense/kernel": {
+      "shape": [
+        256,
+        10
+      ],
+      "dtype": "F32"
+    },
+    "params/MLPEncoderV2_0/objective_heads/upper_bound_dense/bias": {
+      "shape": [
+        10
+      ],
+      "dtype": "F32"
+    },
+    "params/MLPEncoderV2_0/objective_heads/upper_bound_dense/kernel": {
+      "shape": [
+        256,
+        10
+      ],
+      "dtype": "F32"
+    },
+    "params/rho_raw": {
+      "shape": [],
+      "dtype": "F32"
+    },
+    "params/rm/R_E": {
+      "shape": [
+        5,
+        10
+      ],
+      "dtype": "F32"
+    },
+    "params/rm/R_N": {
+      "shape": [
+        5,
+        10
+      ],
+      "dtype": "F32"
+    },
+    "params/rm/R_NE": {
+      "shape": [
+        5,
+        10
+      ],
+      "dtype": "F32"
+    },
+    "params/rm/R_NW": {
+      "shape": [
+        5,
+        10
+      ],
+      "dtype": "F32"
+    },
+    "params/rm/R_S": {
+      "shape": [
+        5,
+        10
+      ],
+      "dtype": "F32"
+    },
+    "params/rm/R_SE": {
+      "shape": [
+        5,
+        10
+      ],
+      "dtype": "F32"
+    },
+    "params/rm/R_SW": {
+      "shape": [
+        5,
+        10
+      ],
+      "dtype": "F32"
+    },
+    "params/rm/R_W": {
+      "shape": [
+        5,
+        10
+      ],
+      "dtype": "F32"
+    }
+  },
+  "batch.npz": {
+    "tokens": {
+      "shape": [
+        2,
+        19,
+        19
+      ],
+      "dtype": "i64"
+    },
+    "labels": {
+      "shape": [
+        2,
+        19,
+        19
+      ],
+      "dtype": "i64"
+    },
+    "centers": {
+      "shape": [
+        81,
+        2
+      ],
+      "dtype": "i64"
+    },
+    "node_positions": {
+      "shape": [
+        81,
+        2
+      ],
+      "dtype": "f32"
+    },
+    "edges": {
+      "shape": [
+        272,
+        2
+      ],
+      "dtype": "i64"
+    },
+    "dir_uv": {
+      "shape": [
+        272
+      ],
+      "dtype": "i64"
+    },
+    "dir_vu": {
+      "shape": [
+        272
+      ],
+      "dtype": "i64"
+    },
+    "patches": {
+      "shape": [
+        81,
+        2,
+        3,
+        3,
+        6
+      ],
+      "dtype": "f32"
+    }
+  },
+  "trace.npz": {
+    "enc_h": {
+      "shape": [
+        81,
+        2,
+        10
+      ],
+      "dtype": "f32"
+    },
+    "enc_q_diag": {
+      "shape": [
+        81,
+        2,
+        10
+      ],
+      "dtype": "f32"
+    },
+    "enc_q": {
+      "shape": [
+        81,
+        2,
+        10
+      ],
+      "dtype": "f32"
+    },
+    "enc_l1_weight": {
+      "shape": [
+        81,
+        2,
+        10
+      ],
+      "dtype": "f32"
+    },
+    "enc_upper": {
+      "shape": [
+        81,
+        2,
+        10
+      ],
+      "dtype": "f32"
+    },
+    "lora_A": {
+      "shape": [
+        81,
+        2,
+        8,
+        5,
+        4
+      ],
+      "dtype": "f32"
+    },
+    "lora_B": {
+      "shape": [
+        81,
+        2,
+        8,
+        10,
+        4
+      ],
+      "dtype": "f32"
+    },
+    "base_restriction_maps": {
+      "shape": [
+        272,
+        2,
+        5,
+        10
+      ],
+      "dtype": "f32"
+    },
+    "rho": {
+      "shape": [],
+      "dtype": "f32"
+    },
+    "x": {
+      "shape": [
+        12,
+        81,
+        2,
+        10
+      ],
+      "dtype": "f32"
+    },
+    "z": {
+      "shape": [
+        12,
+        81,
+        2,
+        10
+      ],
+      "dtype": "f32"
+    },
+    "y": {
+      "shape": [
+        12,
+        81,
+        2,
+        10
+      ],
+      "dtype": "f32"
+    },
+    "primal_res": {
+      "shape": [
+        12,
+        81,
+        2
+      ],
+      "dtype": "f32"
+    },
+    "dual_res": {
+      "shape": [
+        12,
+        81,
+        2
+      ],
+      "dtype": "f32"
+    },
+    "consistency": {
+      "shape": [
+        12,
+        2
+      ],
+      "dtype": "f32"
+    },
+    "logits_per_iter": {
+      "shape": [
+        12,
+        81,
+        2,
+        3,
+        3,
+        6
+      ],
+      "dtype": "f32"
+    },
+    "logits_final": {
+      "shape": [
+        81,
+        2,
+        3,
+        3,
+        6
+      ],
+      "dtype": "f32"
+    },
+    "reassembled_final": {
+      "shape": [
+        2,
+        19,
+        19,
+        6
+      ],
+      "dtype": "f32"
+    },
+    "pred_grid": {
+      "shape": [
+        2,
+        19,
+        19
+      ],
+      "dtype": "i64"
+    }
+  }
+}

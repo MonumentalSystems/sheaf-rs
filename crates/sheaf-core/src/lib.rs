@@ -12,16 +12,13 @@
 //! - `q_epsilon = 1e-4` added in the objective heads (sheaf-nn side);
 //! - `alpha == 1.0` skips the relaxation blend entirely (bitwise fast path).
 
-// Scaffold phase: stub bodies are `todo!()`. Remove this allow as modules land.
-#![allow(unused_variables, dead_code)]
-
 pub mod admm;
 pub mod geometry;
 pub mod graph;
 pub mod solvers;
 pub mod tensor;
 
-pub use admm::{run_admm, run_admm_history, AdmmHistory, AdmmParams, AdmmState};
+pub use admm::{run_admm, run_admm_history, AdmmHistory, AdmmParams, AdmmState, XSolverKind};
 pub use geometry::{FixedGeometry, LoraGeometry, SheafGeometry};
 pub use graph::AgentGraph;
-pub use solvers::{EncoderOutput, LoraFactors, Objective};
+pub use solvers::{EncoderOutput, LoraFactors, Objective, UnrolledCgParams, ZMode};

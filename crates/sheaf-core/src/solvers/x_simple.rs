@@ -7,5 +7,11 @@
 use crate::tensor::NodeState;
 
 pub fn simple_solve(z: &NodeState, y: &NodeState, rho: f32, h: &NodeState, beta: f32) -> NodeState {
-    todo!()
+    assert_eq!(h.dim(), z.dim(), "h must be [N, B, d_v]");
+    let denom = beta + rho;
+    let mut x = NodeState::zeros(z.dim());
+    ndarray::azip!((x in &mut x, &z in z, &y in y, &h in h) {
+        *x = (beta * h + rho * (z - y)) / denom;
+    });
+    x
 }

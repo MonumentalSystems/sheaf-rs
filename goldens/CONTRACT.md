@@ -25,7 +25,7 @@ stride=2, connectivity=8:
 | r | 4 | LoRA rank |
 | D | 8 | direction slots, order (N, NE, E, SE, S, SW, W, NW) = 0..7 |
 | ps | 3 | patch size |
-| C | 6 | token classes (0 empty, 1 wall, 2 start, 3 goal, 5 path) |
+| C | 6 | token classes (0 pad, 1 wall, 2 empty, 3 start, 4 goal, 5 path) |
 
 All floats are **f32**, all integers **i64**, everywhere (exporter casts; Rust
 loaders reject anything else). Weights are dumped from the **EMA** tree unless
@@ -78,6 +78,12 @@ on the **EMA** `rho_raw` (PLAN.md §3.5: scalar reparameterizations are baked;
 Rust inference never implements the offset-softplus). The raw `rho_raw` params
 still appear in the safetensors for completeness but Rust ignores them.
 
+Note the `model` object deliberately omits `rho_init` (it only feeds the
+offset-softplus that is baked away), so it cannot rebuild the *Python*
+`ModelConfig` by itself — Python-side tools (`dump_goldens.py`) read
+`configs/experiment/maze_sheaf.yaml` for model construction and use
+config.json only for the task block and `baked.rho` verification.
+
 ## weights.safetensors — key naming
 
 **Rule:** key = `<collection> "/" <flattened Flax module path>`, where
@@ -87,7 +93,7 @@ still appear in the safetensors for completeness but Rust ignores them.
 Dense kernels stay **[in, out]** (`y = x·W + b`).
 
 Exhaustive per-collection key list for this config (verified against
-`SheafADMMModel.init` on the maze config; 36 arrays, 181,859 params per
+`SheafADMMModel.init` on the maze config; 35 arrays, 181,859 params per
 collection — the exporter asserts this list exactly, extra or missing keys are
 an export failure):
 
@@ -196,6 +202,7 @@ matching `coordinate_history`):
 | `logits_per_iter` | [K, N, B, 3, 3, 6] | f32 |
 | `logits_final` | [N, B, 3, 3, 6] | f32 — `logits_per_iter[K-1]` (redundant on purpose: cheap first parity target) |
 | `reassembled_final` | [B, 19, 19, 6] | f32 — overlap-mean reassembly of `logits_final` |
+| `pred_grid` | [B, 19, 19] | i64 — `argmax(reassembled_final, -1)`, the decoded per-cell token grid (eval-path parity target; `MazeTask.evaluate` compares this to `labels`) |
 
 ## manifest.json
 
@@ -209,7 +216,7 @@ verify completeness before any numeric comparison:
                  "N": 81, "E": 272, "weights": "ema_params"},
   "safetensors": {
     "params/rho_raw": {"shape": [], "dtype": "F32"},
-    "...": "... all 72 keys (36 per collection) ..."
+    "...": "... all 70 keys (35 per collection) ..."
   },
   "batch.npz":  { "tokens": {"shape": [2, 19, 19], "dtype": "i64"}, "...": "..." },
   "trace.npz":  { "x": {"shape": [12, 81, 2, 10], "dtype": "f32"}, "...": "..." }

@@ -12,9 +12,6 @@
 //!   `[N, B, ...] -> [N*B, ...] -> apply -> reshape back` contract;
 //! - dropout / training=True branches do not exist here (shipped rate = 0).
 
-// Scaffold phase: stub bodies are `todo!()`. Remove this allow as modules land.
-#![allow(unused_variables, dead_code)]
-
 pub mod config;
 pub mod decoder;
 pub mod encoder;
@@ -22,7 +19,11 @@ pub mod layers;
 pub mod model;
 pub mod restriction_maps;
 
-pub use config::ModelConfig;
+pub use config::{ExportedConfig, ModelConfig};
 pub use decoder::{ConcatMlpDecoderV2, ConcatMlpDecoderV2Params};
-pub use encoder::{MlpEncoderV2, MlpEncoderV2Params};
-pub use model::{MazeForward, SheafAdmmModel};
+pub use encoder::{MlpEncoderV2, MlpEncoderV2Config, MlpEncoderV2Params};
+pub use model::{MazeForward, RmParams, SheafAdmmModel};
+pub use restriction_maps::{
+    build_directional_restriction_maps, compute_direction_index, direction_names,
+    direction_slot_tables,
+};

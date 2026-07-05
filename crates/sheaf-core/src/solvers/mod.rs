@@ -4,7 +4,7 @@ mod x_diag_prox;
 mod x_simple;
 mod z_cg;
 
-pub use x_diag_prox::diagonal_prox_solve;
+pub use x_diag_prox::{diagonal_prox_solve, soft_threshold};
 pub use x_simple::simple_solve;
 pub use z_cg::{unrolled_cg_solve, UnrolledCgParams, ZMode, CG_DENOM_EPS};
 
