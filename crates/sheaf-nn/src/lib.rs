@@ -22,13 +22,16 @@ pub mod restriction_maps;
 pub use config::{ExportedConfig, ModelConfig};
 pub use decoder::{
     mnist_mean_softmax_predict, ClassificationDecoder, ClassificationDecoderParams,
-    ConcatMlpDecoderV2, ConcatMlpDecoderV2Params, ReadoutMode,
+    ConcatMlpDecoderV2, ConcatMlpDecoderV2Params, ReadoutMode, SudokuDecoder, SudokuDecoderParams,
 };
 pub use encoder::{
     MlpEncoder, MlpEncoderConfig, MlpEncoderParams, MlpEncoderV2, MlpEncoderV2Config,
-    MlpEncoderV2Params,
+    MlpEncoderV2Params, SudokuEncoder, SudokuEncoderConfig, SudokuEncoderParams, SudokuLoraHeads,
 };
-pub use model::{MazeForward, MnistForward, MnistSheafModel, RmParams, SheafAdmmModel};
+pub use model::{
+    MazeForward, MnistForward, MnistSheafModel, RmParams, SheafAdmmModel, SudokuForward,
+    SudokuSheafModel,
+};
 pub use restriction_maps::{
     build_directional_restriction_maps, build_shared_restriction_maps, compute_direction_index,
     direction_names, direction_slot_tables,

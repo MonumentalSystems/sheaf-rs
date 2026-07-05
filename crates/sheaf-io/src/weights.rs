@@ -23,14 +23,14 @@ use safetensors::{Dtype, SafeTensors};
 use sheaf_nn::config::ExportedConfig;
 use sheaf_nn::decoder::{
     ClassificationDecoder, ClassificationDecoderParams, ConcatMlpDecoderV2,
-    ConcatMlpDecoderV2Params, ReadoutMode,
+    ConcatMlpDecoderV2Params, ReadoutMode, SudokuDecoder, SudokuDecoderParams,
 };
 use sheaf_nn::encoder::{
     MlpEncoder, MlpEncoderConfig, MlpEncoderParams, MlpEncoderV2, MlpEncoderV2Config,
-    MlpEncoderV2Params,
+    MlpEncoderV2Params, SudokuEncoder, SudokuEncoderConfig, SudokuEncoderParams, SudokuLoraHeads,
 };
-use sheaf_nn::layers::{Dense, LayerNorm, MlpBlock, RmsNorm};
-use sheaf_nn::model::{MnistSheafModel, RmParams, SheafAdmmModel};
+use sheaf_nn::layers::{Dense, LayerNorm, MlpBlock, MlpMixerBlock, RmsNorm, SwiGlu};
+use sheaf_nn::model::{MnistSheafModel, RmParams, SheafAdmmModel, SudokuSheafModel};
 use sheaf_nn::restriction_maps::direction_names;
 
 /// RMSNorm / LayerNorm epsilon (PLAN.md §3.4 numerics contract).
@@ -537,6 +537,246 @@ fn build_mnist_model(
     })
 }
 
+// ===========================================================================
+// Sudoku loader (Phase C). MLP-Mixer SudokuEncoder, non_negative, soft_slice
+// sudoku sharing (9 base maps), per-cell SudokuDecoder. Flax module names +
+// shapes are pinned against the Python `init` param dump (543,025 / 2,029,233).
+// ===========================================================================
+
+/// The Sudoku Mixer uses a fixed `mlp_ratio = 2.0` (SudokuEncoder default; not a
+/// config field). token_mlp_dim = int(9 * 2) = 18; channel_mlp_dim = d_model * 2.
+const SUDOKU_MLP_RATIO: usize = 2;
+
+/// Exhaustive expected-key manifest for a sudoku config. Flax module names are
+/// pinned against the Python param dump (`SudokuEncoder_0`, `mixer_block_{i}`,
+/// `token_mlp`/`channel_mlp` SwiGLU `gate_up`/`down`, `SudokuDecoder_0`,
+/// `rm/R_indices`). The LoRA heads (`lora_pre_norm`, `lora_A_dense`,
+/// `lora_B_dense`) appear only when `rm_mode = "context"`.
+fn sudoku_expected_keys(config: &ExportedConfig) -> BTreeMap<String, Vec<usize>> {
+    let m = &config.model;
+    let d_model = m.enc_d_model; // 128
+    let d_v = m.d_v; // 288
+    let d_e = m.d_e; // 32
+    let cell_dim = d_v / 9; // 32
+    let token_mlp_dim = 9 * SUDOKU_MLP_RATIO; // 18
+    let channel_mlp_dim = d_model * SUDOKU_MLP_RATIO; // 256
+    let r = m.lora_rank; // 4
+
+    let mut keys: BTreeMap<String, Vec<usize>> = BTreeMap::new();
+    let dense = |name: &str, i: usize, o: usize, keys: &mut BTreeMap<String, Vec<usize>>| {
+        keys.insert(format!("{name}/kernel"), vec![i, o]);
+        keys.insert(format!("{name}/bias"), vec![o]);
+    };
+
+    // ---- SudokuEncoder ----
+    dense("SudokuEncoder_0/token_embed", m.num_classes, d_model, &mut keys);
+    keys.insert("SudokuEncoder_0/global_pos_embed/embedding".into(), vec![81, d_model]);
+    keys.insert("SudokuEncoder_0/pos_embed".into(), vec![1, 9, d_model]);
+    for i in 0..m.enc_num_blocks {
+        let blk = format!("SudokuEncoder_0/mixer_block_{i}");
+        // token_mlp: SwiGLU(hidden=token_mlp_dim, out=T=9) over T=9.
+        dense(&format!("{blk}/token_mlp/gate_up"), 9, 2 * token_mlp_dim, &mut keys);
+        dense(&format!("{blk}/token_mlp/down"), token_mlp_dim, 9, &mut keys);
+        keys.insert(format!("{blk}/token_norm/scale"), vec![d_model]);
+        // channel_mlp: SwiGLU(hidden=channel_mlp_dim, out=C=d_model) over C.
+        dense(&format!("{blk}/channel_mlp/gate_up"), d_model, 2 * channel_mlp_dim, &mut keys);
+        dense(&format!("{blk}/channel_mlp/down"), channel_mlp_dim, d_model, &mut keys);
+        keys.insert(format!("{blk}/channel_norm/scale"), vec![d_model]);
+    }
+    keys.insert("SudokuEncoder_0/pre_flat_norm/scale".into(), vec![d_model]);
+    dense("SudokuEncoder_0/cell_proj", d_model, cell_dim, &mut keys);
+    keys.insert("SudokuEncoder_0/cell_norm/scale".into(), vec![cell_dim]);
+    dense("SudokuEncoder_0/comm_head/comm_dense", d_v, d_v, &mut keys);
+    keys.insert("SudokuEncoder_0/comm_head/comm_norm/scale".into(), vec![d_v]);
+    keys.insert("SudokuEncoder_0/comm_head/comm_norm/bias".into(), vec![d_v]);
+    for head in ["q_diag_dense", "q_dense"] {
+        dense(&format!("SudokuEncoder_0/objective_heads/{head}"), d_model, d_v, &mut keys);
+    }
+    if m.rm_mode == "context" {
+        keys.insert("SudokuEncoder_0/lora_pre_norm/scale".into(), vec![d_model]);
+        dense("SudokuEncoder_0/lora_A_dense", d_model, 9 * d_e * r, &mut keys);
+        dense("SudokuEncoder_0/lora_B_dense", d_model, 9 * d_v * r, &mut keys);
+    }
+
+    // ---- SudokuDecoder ----
+    let mut blk_in = cell_dim;
+    for (i, &dim) in m.dec_hidden_dims.iter().enumerate() {
+        let blk = format!("SudokuDecoder_0/block_{i}");
+        keys.insert(format!("{blk}/norm/scale"), vec![blk_in]);
+        dense(&format!("{blk}/dense1"), blk_in, dim, &mut keys);
+        dense(&format!("{blk}/dense2"), dim, dim, &mut keys);
+        if blk_in != dim {
+            // residual_proj on the residual path when widths differ.
+            dense(&format!("{blk}/residual_proj"), blk_in, dim, &mut keys);
+        }
+        blk_in = dim;
+    }
+    dense("SudokuDecoder_0/output_dense", blk_in, m.num_classes, &mut keys);
+
+    // ---- 9 soft_slice base maps + raw rho scalar ----
+    keys.insert("rm/R_indices".into(), vec![9, d_e, d_v]);
+    keys.insert("rho_raw".into(), vec![]);
+
+    keys
+}
+
+/// Sudoku scope guards: this loader only understands the shipped sudoku configs.
+fn sudoku_scope_guards(config: &ExportedConfig) -> anyhow::Result<()> {
+    let m = &config.model;
+    ensure!(m.encoder_arch == "sudoku", "unsupported encoder_arch {:?}", m.encoder_arch);
+    ensure!(m.decoder_arch == "sudoku", "unsupported decoder_arch {:?}", m.decoder_arch);
+    ensure!(m.rm_sharing == "sudoku", "unsupported rm_sharing {:?}", m.rm_sharing);
+    ensure!(m.rm_init == "soft_slice", "unsupported rm_init {:?}", m.rm_init);
+    ensure!(m.objective_mode == "non_negative", "unsupported objective_mode {:?}", m.objective_mode);
+    ensure!(config.task.task == "sudoku", "unsupported task {:?}", config.task.task);
+    Ok(())
+}
+
+/// Load sudoku `config.json` + `weights.safetensors` into a ready-to-run model.
+/// The default collection is EMA (paper eval convention).
+pub fn load_sudoku_model(
+    config_path: &Path,
+    weights_path: &Path,
+    collection: WeightCollection,
+) -> anyhow::Result<SudokuSheafModel> {
+    let config = load_config(config_path)?;
+    config.validate()?;
+    sudoku_scope_guards(&config)?;
+
+    let bytes = std::fs::read(weights_path)
+        .with_context(|| format!("reading weights {}", weights_path.display()))?;
+    let st = SafeTensors::deserialize(&bytes)
+        .with_context(|| format!("parsing safetensors {}", weights_path.display()))?;
+
+    let expected = sudoku_expected_keys(&config);
+    for prefix in ["params", "ema_params"] {
+        Tree::load(&st, prefix, &expected)?;
+    }
+    for (name, _) in st.iter() {
+        ensure!(
+            name.starts_with("params/") || name.starts_with("ema_params/"),
+            "unexpected top-level key {name:?} (want params/... or ema_params/...)"
+        );
+    }
+    build_sudoku_model(config, &st, collection)
+}
+
+/// Materialize the requested collection into the typed sudoku model.
+fn build_sudoku_model(
+    config: ExportedConfig,
+    st: &SafeTensors,
+    collection: WeightCollection,
+) -> anyhow::Result<SudokuSheafModel> {
+    let m = &config.model;
+    let expected = sudoku_expected_keys(&config);
+    let mut tree = Tree::load(st, collection.prefix(), &expected)?;
+    let d_model = m.enc_d_model;
+
+    // Mixer blocks (SwiGLU token/channel sub-MLPs, post-norm).
+    let mut mixer_blocks = Vec::with_capacity(m.enc_num_blocks);
+    for i in 0..m.enc_num_blocks {
+        let blk = format!("SudokuEncoder_0/mixer_block_{i}");
+        mixer_blocks.push(MlpMixerBlock {
+            token_mlp: SwiGlu {
+                gate_up: tree.dense(&format!("{blk}/token_mlp/gate_up")),
+                down: tree.dense(&format!("{blk}/token_mlp/down")),
+            },
+            token_norm: tree.rms_norm(&format!("{blk}/token_norm")),
+            channel_mlp: SwiGlu {
+                gate_up: tree.dense(&format!("{blk}/channel_mlp/gate_up")),
+                down: tree.dense(&format!("{blk}/channel_mlp/down")),
+            },
+            channel_norm: tree.rms_norm(&format!("{blk}/channel_norm")),
+        });
+    }
+
+    // Embeddings.
+    let (gshape, gdata) = tree.take("SudokuEncoder_0/global_pos_embed/embedding");
+    let global_pos_embed =
+        Array2::from_shape_vec((gshape[0], gshape[1]), gdata).expect("shape checked at load");
+    // pos_embed stored [1, 9, d_model]; drop the leading singleton to [9, d_model].
+    let (_pshape, pdata) = tree.take("SudokuEncoder_0/pos_embed");
+    let pos_embed = Array2::from_shape_vec((9, d_model), pdata).expect("pos_embed [1,9,d_model]");
+
+    // LoRA heads (context only).
+    let lora = if m.rm_mode == "context" {
+        Some(SudokuLoraHeads {
+            lora_pre_norm: tree.rms_norm("SudokuEncoder_0/lora_pre_norm"),
+            lora_a_dense: tree.dense("SudokuEncoder_0/lora_A_dense"),
+            lora_b_dense: tree.dense("SudokuEncoder_0/lora_B_dense"),
+        })
+    } else {
+        None
+    };
+
+    let encoder = SudokuEncoder {
+        params: SudokuEncoderParams {
+            token_embed: tree.dense("SudokuEncoder_0/token_embed"),
+            global_pos_embed,
+            pos_embed,
+            mixer_blocks,
+            pre_flat_norm: tree.rms_norm("SudokuEncoder_0/pre_flat_norm"),
+            cell_proj: tree.dense("SudokuEncoder_0/cell_proj"),
+            cell_norm: tree.rms_norm("SudokuEncoder_0/cell_norm"),
+            comm_dense: tree.dense("SudokuEncoder_0/comm_head/comm_dense"),
+            comm_norm: tree.layer_norm("SudokuEncoder_0/comm_head/comm_norm"),
+            q_diag_dense: tree.dense("SudokuEncoder_0/objective_heads/q_diag_dense"),
+            q_dense: tree.dense("SudokuEncoder_0/objective_heads/q_dense"),
+            lora,
+        },
+        config: SudokuEncoderConfig {
+            d_v: m.d_v,
+            d_e: m.d_e,
+            d_model,
+            num_slots: 9,
+            lora_rank: m.lora_rank,
+            lora_alpha: m.lora_alpha,
+            q_epsilon: m.q_epsilon,
+        },
+    };
+
+    // Decoder: MLPBlock(s) over the 9 cells (residual_proj when widths differ).
+    let cell_dim = m.d_v / 9;
+    let mut blocks = Vec::with_capacity(m.dec_hidden_dims.len());
+    let mut blk_in = cell_dim;
+    for (i, &dim) in m.dec_hidden_dims.iter().enumerate() {
+        let blk = format!("SudokuDecoder_0/block_{i}");
+        let residual_proj = (blk_in != dim).then(|| tree.dense(&format!("{blk}/residual_proj")));
+        blocks.push(MlpBlock {
+            norm: tree.rms_norm(&format!("{blk}/norm")),
+            dense1: tree.dense(&format!("{blk}/dense1")),
+            dense2: tree.dense(&format!("{blk}/dense2")),
+            residual_proj,
+        });
+        blk_in = dim;
+    }
+    let decoder = SudokuDecoder {
+        params: SudokuDecoderParams {
+            blocks,
+            output_dense: tree.dense("SudokuDecoder_0/output_dense"),
+        },
+        num_classes: m.num_classes,
+    };
+
+    // The 9 soft_slice base maps R_indices [9, d_e, d_v].
+    let (rshape, rdata) = tree.take("rm/R_indices");
+    let r_indices = Array3::from_shape_vec((rshape[0], rshape[1], rshape[2]), rdata)
+        .expect("shape checked at load");
+
+    // rho_raw present but unused: inference reads the export-baked value.
+    let _ = tree.take("rho_raw");
+
+    let rho = config.baked.rho;
+    Ok(SudokuSheafModel {
+        config,
+        encoder,
+        decoder,
+        r_indices,
+        cell_ids: crate::views::build_sudoku_cell_indices(),
+        rho,
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -894,6 +1134,206 @@ mod tests {
         let pred = fwd.prediction();
         assert_eq!(pred.len(), b);
         assert!(pred.iter().all(|&c| (0..10).contains(&c)));
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    // ---- sudoku loader (Phase C) ----
+
+    /// The shipped sudoku config at REAL dims (d_v=288, d_e=32, d_model=128,
+    /// 2 blocks, dec_hidden_dims=[256]), fixed variant. Used only to pin the
+    /// manifest param count (no weights fixture — the sum is derived).
+    const SUDOKU_FULL_JSON: &str = r#"{
+      "model": {
+        "num_classes": 10, "d_v": 288, "d_e": 32,
+        "encoder_arch": "sudoku", "enc_d_model": 128, "enc_num_blocks": 2,
+        "comm_norm_type": "layernorm",
+        "objective_mode": "non_negative", "x_solver": "diagonal_prox",
+        "z_solver": "unrolled_cg", "z_mode": "prox", "gamma": 2.0,
+        "cg_iters": 5, "tikhonov_eps": 1e-5,
+        "rm_sharing": "sudoku", "rm_init": "soft_slice", "rm_mode": "fixed",
+        "lora_rank": 4, "lora_alpha": 1.0, "lora_init_style": "standard",
+        "num_directions": 9,
+        "relaxation_alpha": 1.0, "z_init": "h", "q_epsilon": 1e-4,
+        "decoder_arch": "sudoku", "dec_hidden_dims": [256]
+      },
+      "task": {
+        "task": "sudoku", "patch_size": 3, "stride": 3, "connectivity": 8,
+        "num_classes": 10, "k_eval": 50, "loss_window": 2
+      },
+      "baked": { "rho": 0.28 }
+    }"#;
+
+    fn manifest_total(config: &ExportedConfig) -> usize {
+        sudoku_expected_keys(config)
+            .values()
+            .map(|s| s.iter().product::<usize>())
+            .sum()
+    }
+
+    #[test]
+    fn sudoku_manifest_matches_param_pins() {
+        // PLAN appendix param pins: 543,025 (fixed) / 2,029,233 (LoRA).
+        let fixed: ExportedConfig = serde_json::from_str(SUDOKU_FULL_JSON).unwrap();
+        assert_eq!(manifest_total(&fixed), 543_025, "fixed sudoku_sheaf param pin");
+
+        let lora_json = SUDOKU_FULL_JSON.replace(r#""rm_mode": "fixed""#, r#""rm_mode": "context""#);
+        let lora: ExportedConfig = serde_json::from_str(&lora_json).unwrap();
+        assert_eq!(manifest_total(&lora), 2_029_233, "LoRA sudoku_sheaf_lora param pin");
+    }
+
+    /// Shrunk sudoku config for a fast load + forward fixture (d_v=18, d_e=2,
+    /// d_model=4, 1 block, dec_hidden_dims=[5]); scope strings match the yaml.
+    const SUDOKU_TINY_JSON: &str = r#"{
+      "model": {
+        "num_classes": 10, "d_v": 18, "d_e": 2,
+        "encoder_arch": "sudoku", "enc_d_model": 4, "enc_num_blocks": 1,
+        "comm_norm_type": "layernorm",
+        "objective_mode": "non_negative", "x_solver": "diagonal_prox",
+        "z_solver": "unrolled_cg", "z_mode": "prox", "gamma": 2.0,
+        "cg_iters": 5, "tikhonov_eps": 1e-5,
+        "rm_sharing": "sudoku", "rm_init": "soft_slice", "rm_mode": "context",
+        "lora_rank": 1, "lora_alpha": 1.0, "lora_init_style": "standard",
+        "num_directions": 9,
+        "relaxation_alpha": 1.0, "z_init": "h", "q_epsilon": 1e-4,
+        "decoder_arch": "sudoku", "dec_hidden_dims": [5]
+      },
+      "task": {
+        "task": "sudoku", "patch_size": 3, "stride": 3, "connectivity": 8,
+        "num_classes": 10, "k_eval": 50, "loss_window": 2
+      },
+      "baked": { "rho": 0.28 }
+    }"#;
+
+    fn write_sudoku_fixture(dir: &Path, config_json: &str) {
+        std::fs::create_dir_all(dir).unwrap();
+        std::fs::write(dir.join("config.json"), config_json).unwrap();
+        let config = load_config(&dir.join("config.json")).unwrap();
+        let expected = sudoku_expected_keys(&config);
+
+        let mut buffers: Vec<(String, Vec<usize>, Vec<f32>)> = Vec::new();
+        for prefix in ["params", "ema_params"] {
+            for (i, (suffix, shape)) in expected.iter().enumerate() {
+                let full = format!("{prefix}/{suffix}");
+                let len: usize = shape.iter().product();
+                let seed = i + if prefix == "ema_params" { 1000 } else { 0 };
+                buffers.push((full, shape.clone(), fill(seed, len)));
+            }
+        }
+        let bytes: Vec<(String, Vec<usize>, Vec<u8>)> = buffers
+            .into_iter()
+            .map(|(name, shape, data)| {
+                let raw: Vec<u8> = data.iter().flat_map(|v| v.to_le_bytes()).collect();
+                (name, shape, raw)
+            })
+            .collect();
+        let views: HashMap<&str, TensorView> = bytes
+            .iter()
+            .map(|(name, shape, raw)| {
+                (name.as_str(), TensorView::new(Dtype::F32, shape.clone(), raw).unwrap())
+            })
+            .collect();
+        std::fs::write(
+            dir.join("weights.safetensors"),
+            safetensors::serialize(&views, &None).unwrap(),
+        )
+        .unwrap();
+    }
+
+    #[test]
+    fn loads_sudoku_typed_structs() {
+        let dir = temp_dir("sudoku_ok");
+        write_sudoku_fixture(&dir, SUDOKU_TINY_JSON);
+        let model = load_sudoku_model(
+            &dir.join("config.json"),
+            &dir.join("weights.safetensors"),
+            WeightCollection::default(),
+        )
+        .unwrap();
+
+        let p = &model.encoder.params;
+        assert_eq!(p.token_embed.kernel.dim(), (10, 4)); // [num_classes, d_model]
+        assert_eq!(p.global_pos_embed.dim(), (81, 4));
+        assert_eq!(p.pos_embed.dim(), (9, 4)); // dropped the leading singleton
+        assert_eq!(p.mixer_blocks.len(), 1);
+        assert_eq!(p.mixer_blocks[0].token_mlp.gate_up.kernel.dim(), (9, 36)); // [T, 2*18]
+        assert_eq!(p.mixer_blocks[0].token_mlp.down.kernel.dim(), (18, 9)); // [18, T]
+        assert_eq!(p.mixer_blocks[0].channel_mlp.gate_up.kernel.dim(), (4, 16)); // [C, 2*(C*2)]
+        assert_eq!(p.mixer_blocks[0].channel_mlp.down.kernel.dim(), (8, 4)); // [C*2, C]
+        assert_eq!(p.cell_proj.kernel.dim(), (4, 2)); // d_model -> cell_dim
+        assert_eq!(p.comm_dense.kernel.dim(), (18, 18)); // d_v -> d_v
+        assert_eq!(p.q_diag_dense.kernel.dim(), (4, 18)); // d_model -> d_v
+        let lora = p.lora.as_ref().expect("context config carries LoRA heads");
+        assert_eq!(lora.lora_a_dense.kernel.dim(), (4, 9 * 2)); // [d_model, 9*d_e*r], r=1
+        assert_eq!(lora.lora_b_dense.kernel.dim(), (4, 9 * 18)); // [d_model, 9*d_v*r], r=1
+
+        // Decoder: block widens cell_dim(2) -> 5, so residual_proj present.
+        let d = &model.decoder.params;
+        assert_eq!(d.blocks.len(), 1);
+        assert_eq!(d.blocks[0].dense1.kernel.dim(), (2, 5));
+        assert!(d.blocks[0].residual_proj.is_some(), "2->5 block needs residual_proj");
+        assert_eq!(d.output_dense.kernel.dim(), (5, 10));
+
+        assert_eq!(model.r_indices.dim(), (9, 2, 18)); // [9, d_e, d_v]
+        assert_eq!(model.cell_ids.dim(), (27, 9));
+        assert_eq!(model.rho, 0.28);
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn sudoku_fixed_config_has_no_lora_heads() {
+        let dir = temp_dir("sudoku_fixed");
+        let fixed_json = SUDOKU_TINY_JSON.replace(r#""rm_mode": "context""#, r#""rm_mode": "fixed""#);
+        write_sudoku_fixture(&dir, &fixed_json);
+        let model = load_sudoku_model(
+            &dir.join("config.json"),
+            &dir.join("weights.safetensors"),
+            WeightCollection::Ema,
+        )
+        .unwrap();
+        assert!(model.encoder.params.lora.is_none(), "fixed config must not load LoRA heads");
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn sudoku_loader_runs_a_forward_nonneg_and_predicts() {
+        use ndarray::Array4;
+        use std::sync::Arc;
+
+        let dir = temp_dir("sudoku_fwd");
+        write_sudoku_fixture(&dir, SUDOKU_TINY_JSON);
+        let model = load_sudoku_model(
+            &dir.join("config.json"),
+            &dir.join("weights.safetensors"),
+            WeightCollection::Ema,
+        )
+        .unwrap();
+
+        // Patches [N=27, B=2, 9, num_classes=10] one-hot-ish.
+        let b = 2usize;
+        let patches = Array4::<f32>::from_shape_fn((27, b, 9, 10), |(n, bi, t, c)| {
+            if c == (n + bi + t) % 10 { 1.0 } else { 0.0 }
+        });
+        let graph = Arc::new(crate::views::build_sudoku_graph());
+        let fwd = model.forward(&patches, graph, 6);
+
+        // logits_per_iter [K, N, B, 9, C]; final [N, B, 9, C].
+        assert_eq!(fwd.logits_per_iter.dim(), (6, 27, b, 9, 10));
+        let logits_final = fwd.logits_final();
+        assert_eq!(logits_final.dim(), (27, b, 9, 10));
+        assert!(logits_final.iter().all(|v| v.is_finite()));
+
+        // NonNeg objective: every x-iterate is clamped at 0 (lower = 0).
+        assert!(
+            fwd.history.x.iter().all(|&v| v >= 0.0),
+            "NonNeg x-update must clamp at 0"
+        );
+
+        // Prediction reassembles [27,B,9,C] -> [B,9,9] digits 0..10.
+        let pred = crate::views::sudoku_predict(&logits_final);
+        assert_eq!(pred.dim(), (b, 9, 9));
+        assert!(pred.iter().all(|&d| (0..10).contains(&d)));
 
         std::fs::remove_dir_all(&dir).ok();
     }

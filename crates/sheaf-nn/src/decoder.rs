@@ -10,9 +10,9 @@
 //! reshape back` contract (the parent flattens; this mirrors decoder.py which
 //! sees a single leading batch axis B' = N*B).
 
-use ndarray::{concatenate, Array2, Array3, Array5, Axis};
+use ndarray::{concatenate, Array2, Array3, Array4, Array5, Axis};
 
-use crate::layers::{gelu_tanh, Dense, RmsNorm};
+use crate::layers::{gelu_tanh, Dense, MlpBlock, RmsNorm};
 
 #[derive(Debug, Clone)]
 pub struct ConcatMlpDecoderV2Params {
@@ -135,6 +135,53 @@ impl ClassificationDecoder {
         logits
             .into_shape_with_order((n, b, self.num_classes))
             .expect("classification: output reshape")
+    }
+}
+
+// ===========================================================================
+// SudokuDecoder (`arch = "sudoku"`, per-cell digit logits).
+// ===========================================================================
+
+/// Weights of the Sudoku decoder. `[B', 9*cell_dim] -> [B', 9, cell_dim]`, then
+/// shared [`MlpBlock`]s over the 9 cells (Flax applies Dense over the last axis,
+/// sharing across cells), then `Dense(output_channels)`. The shipped config is
+/// `dec_hidden_dims = [256]` with `cell_dim = d_v/9 = 32`, so the single block
+/// widens 32 -> 256 (its residual path runs through a learned `residual_proj`).
+#[derive(Debug, Clone)]
+pub struct SudokuDecoderParams {
+    pub blocks: Vec<MlpBlock>, // block_0 .. (one 32->256 residual block shipped)
+    pub output_dense: Dense,   // output_dense [hidden, output_channels]
+}
+
+pub struct SudokuDecoder {
+    pub params: SudokuDecoderParams,
+    /// Number of output classes (= `output_dense` out-dim), 10 for sudoku.
+    pub num_classes: usize,
+}
+
+impl SudokuDecoder {
+    /// Decode one agent-state slab `x [N, B, d_v]` -> per-cell logits
+    /// `[N, B, 9, num_classes]`. Shared across agents AND across the 9 cells via
+    /// the `[N*B*9, cell_dim]` flatten contract (Dense over the last axis).
+    pub fn forward(&self, x: &Array3<f32>) -> Array4<f32> {
+        let (n, b, d_v) = x.dim();
+        assert_eq!(d_v % 9, 0, "sudoku decoder d_v must be divisible by 9");
+        let cell_dim = d_v / 9;
+        let nb = n * b;
+        // [N, B, 9*cell_dim] -> [N*B*9, cell_dim] (contiguous cell blocks).
+        let mut feats = x
+            .as_standard_layout()
+            .into_owned()
+            .into_shape_with_order((nb * 9, cell_dim))
+            .expect("sudoku decoder: cell flatten");
+        for block in &self.params.blocks {
+            feats = block.forward(&feats);
+        }
+        let logits = self.params.output_dense.forward(&feats);
+        assert_eq!(logits.shape()[1], self.num_classes, "sudoku decoder: output width");
+        logits
+            .into_shape_with_order((n, b, 9, self.num_classes))
+            .expect("sudoku decoder: output reshape")
     }
 }
 
@@ -404,5 +451,56 @@ mod tests {
         let manual = (0..c).max_by(|&i, &j| agg[i].partial_cmp(&agg[j]).unwrap()).unwrap();
         assert_eq!(pred[0] as usize, manual);
         let _ = b;
+    }
+
+    // ---- SudokuDecoder ----
+
+    #[test]
+    fn sudoku_decoder_shapes_and_shared_over_cells() {
+        // d_v = 18 (cell_dim 2), one width-preserving block, output 10 classes.
+        let cell_dim = 2usize;
+        let block = MlpBlock {
+            norm: RmsNorm::new(Array1::ones(cell_dim)),
+            dense1: Dense::new(
+                Array2::from_shape_fn((cell_dim, cell_dim), |(i, j)| 0.1 * (i as f32 + 1.0) - 0.05 * j as f32),
+                Array1::zeros(cell_dim),
+            ),
+            dense2: Dense::new(
+                Array2::from_shape_fn((cell_dim, cell_dim), |(i, j)| 0.2 * i as f32 - 0.1 * j as f32),
+                Array1::from_vec(vec![0.01, -0.02]),
+            ),
+            residual_proj: None,
+        };
+        let dec = SudokuDecoder {
+            params: SudokuDecoderParams {
+                blocks: vec![block],
+                output_dense: Dense::new(
+                    Array2::from_shape_fn((cell_dim, 10), |(i, j)| 0.03 * i as f32 - 0.01 * j as f32),
+                    Array1::from_shape_fn(10, |j| 0.001 * j as f32),
+                ),
+            },
+            num_classes: 10,
+        };
+        let (n, b) = (3usize, 2);
+        let x = Array3::from_shape_fn((n, b, 9 * cell_dim), |(i, j, d)| {
+            0.1 * i as f32 - 0.2 * j as f32 + 0.05 * d as f32
+        });
+        let logits = dec.forward(&x);
+        assert_eq!(logits.shape(), &[n, b, 9, 10]);
+
+        // Each cell decodes independently (shared block): the logits for cell k
+        // must equal running the block+head on that cell's 2-vector alone.
+        for i in 0..n {
+            for j in 0..b {
+                for k in 0..9 {
+                    let cell = Array2::from_shape_fn((1, cell_dim), |(_, d)| x[[i, j, k * cell_dim + d]]);
+                    let h = dec.params.blocks[0].forward(&cell);
+                    let want = dec.params.output_dense.forward(&h);
+                    for cc in 0..10 {
+                        assert_abs_diff_eq!(logits[[i, j, k, cc]], want[[0, cc]], epsilon = 1e-6);
+                    }
+                }
+            }
+        }
     }
 }

@@ -7,7 +7,7 @@
 //! tanh approximation (Flax default); softplus is the stable
 //! `max(x, 0) + log1p(exp(-|x|))` form; all matmuls true fp32.
 
-use ndarray::{Array1, Array2, Axis};
+use ndarray::{Array1, Array2, Array3, Axis};
 
 /// Flax `nn.Dense`: `y = x * kernel + bias`, kernel stored `[in, out]`.
 /// The loader must NOT transpose — this matches the safetensors layout.
@@ -172,6 +172,106 @@ pub fn sigmoid(x: f32) -> f32 {
     }
 }
 
+/// SiLU / swish activation `x * sigmoid(x)` (the `jax.nn.silu` used by SwiGLU).
+pub fn silu(x: f32) -> f32 {
+    x * sigmoid(x)
+}
+
+/// Apply an [`RmsNorm`] over the last axis of a `[B, T, C]` tensor (each of the
+/// `B*T` rows normalized over `C`). Flax `RMSNorm` normalizes the last axis and
+/// shares the scale across all leading axes.
+pub fn rms_norm_last_axis(norm: &RmsNorm, x: &Array3<f32>) -> Array3<f32> {
+    let (b, t, c) = x.dim();
+    let flat = x
+        .as_standard_layout()
+        .into_owned()
+        .into_shape_with_order((b * t, c))
+        .expect("rms_norm_last_axis: reshape");
+    norm.forward(&flat)
+        .into_shape_with_order((b, t, c))
+        .expect("rms_norm_last_axis: unshape")
+}
+
+/// SwiGLU MLP (Shazeer 2020): `down(silu(gate) * up)` with a fused `[gate, up]`
+/// projection. Ports `layers.SwiGLU`. `gate_up` splits into `[gate | up]` on the
+/// last axis (first half gate, second half up — `jnp.split(.., 2, -1)`).
+#[derive(Debug, Clone)]
+pub struct SwiGlu {
+    pub gate_up: Dense, // [in, 2*hidden]
+    pub down: Dense,    // [hidden, out]
+}
+
+impl SwiGlu {
+    /// `[rows, in] -> [rows, out]`. Flax applies Dense over the last axis, so the
+    /// parent flattens any leading `[B, T]` into `rows` before calling.
+    pub fn forward(&self, x: &Array2<f32>) -> Array2<f32> {
+        let gate_up = self.gate_up.forward(x); // [rows, 2*hidden]
+        let two_h = gate_up.shape()[1];
+        assert_eq!(two_h % 2, 0, "SwiGLU gate_up width must be even");
+        let hidden = two_h / 2;
+        // First half = gate, second half = up (jnp.split(.., 2, -1)).
+        let gate = gate_up.slice(ndarray::s![.., 0..hidden]);
+        let up = gate_up.slice(ndarray::s![.., hidden..two_h]);
+        let mut h = gate.mapv(silu);
+        h *= &up; // silu(gate) * up
+        self.down.forward(&h)
+    }
+}
+
+/// TRM-style **post-norm** MLP-Mixer block over `[B, T, C]`. Ports
+/// `layers.MLPMixerBlock` (SwiGLU sub-MLPs — the Sudoku encoder trunk):
+/// - token mixing: `x = RMSNorm(x + swapaxes(TokenMLP(swapaxes(x)))) `;
+/// - channel mixing: `x = RMSNorm(x + ChannelMLP(x))`.
+///
+/// The token MLP mixes over the `T` axis (out_dim = `T`); the channel MLP mixes
+/// over the `C` axis (out_dim = `C`). Both norms are applied AFTER the residual
+/// add (post-norm), unlike the pre-norm [`MlpBlock`].
+#[derive(Debug, Clone)]
+pub struct MlpMixerBlock {
+    pub token_mlp: SwiGlu,   // hidden = token_mlp_dim, out = T
+    pub token_norm: RmsNorm, // [C]
+    pub channel_mlp: SwiGlu, // hidden = channel_mlp_dim, out = C
+    pub channel_norm: RmsNorm, // [C]
+}
+
+impl MlpMixerBlock {
+    /// `[B, T, C] -> [B, T, C]`.
+    pub fn forward(&self, x: &Array3<f32>) -> Array3<f32> {
+        let (b, t, c) = x.dim();
+
+        // ---- token mixing (mix across T) ----
+        // y = swapaxes(x, 1, 2) -> [B, C, T]; flatten [B*C, T]; SwiGLU(out=T).
+        let xt = x
+            .view()
+            .permuted_axes([0, 2, 1])
+            .as_standard_layout()
+            .into_owned()
+            .into_shape_with_order((b * c, t))
+            .expect("mixer token swap reshape");
+        let yt = self.token_mlp.forward(&xt); // [B*C, T]
+        let yt = yt
+            .into_shape_with_order((b, c, t))
+            .expect("mixer token unshape")
+            .permuted_axes([0, 2, 1])
+            .as_standard_layout()
+            .into_owned(); // [B, T, C]
+        let x = rms_norm_last_axis(&self.token_norm, &(x + &yt));
+
+        // ---- channel mixing (mix across C) ----
+        let x_flat = x
+            .as_standard_layout()
+            .into_owned()
+            .into_shape_with_order((b * t, c))
+            .expect("mixer channel reshape");
+        let yc = self
+            .channel_mlp
+            .forward(&x_flat)
+            .into_shape_with_order((b, t, c))
+            .expect("mixer channel unshape");
+        rms_norm_last_axis(&self.channel_norm, &(&x + &yc))
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -310,5 +410,107 @@ mod tests {
         assert_abs_diff_eq!(sigmoid(0.0), 0.5, epsilon = 1e-7);
         assert_abs_diff_eq!(sigmoid(-2.0) + sigmoid(2.0), 1.0, epsilon = 1e-6);
         assert_abs_diff_eq!(sigmoid(100.0), 1.0, epsilon = 1e-7);
+    }
+
+    #[test]
+    fn silu_is_x_times_sigmoid() {
+        assert_eq!(silu(0.0), 0.0);
+        assert_abs_diff_eq!(silu(1.0), 1.0 * sigmoid(1.0), epsilon = 1e-7);
+        assert_abs_diff_eq!(silu(-2.0), -2.0 * sigmoid(-2.0), epsilon = 1e-7);
+        // f64 mirror x/(1+e^-x).
+        let expect = |x: f64| x / (1.0 + (-x).exp());
+        assert_abs_diff_eq!(silu(3.0), expect(3.0) as f32, epsilon = 1e-6);
+    }
+
+    #[test]
+    fn swiglu_matches_manual() {
+        // in=2, hidden=3, out=2. down(silu(gate) * up), gate=first half.
+        let gate_up = Dense::new(
+            Array2::from_shape_fn((2, 6), |(i, j)| 0.1 * (i as f32 + 1.0) - 0.05 * j as f32),
+            Array1::from_shape_fn(6, |j| 0.02 * j as f32),
+        );
+        let down = Dense::new(
+            Array2::from_shape_fn((3, 2), |(i, j)| 0.2 * i as f32 - 0.1 * j as f32),
+            Array1::from_vec(vec![0.01, -0.01]),
+        );
+        let sw = SwiGlu { gate_up, down };
+        let x = array![[0.5f32, -1.0], [1.5, 0.2]];
+        let got = sw.forward(&x);
+        assert_eq!(got.shape(), &[2, 2]);
+        // Manual: gate_up -> split -> silu(gate)*up -> down.
+        let gu = sw.gate_up.forward(&x);
+        let mut h = Array2::<f32>::zeros((2, 3));
+        for r in 0..2 {
+            for k in 0..3 {
+                h[[r, k]] = silu(gu[[r, k]]) * gu[[r, k + 3]];
+            }
+        }
+        let want = sw.down.forward(&h);
+        for (g, w) in got.iter().zip(want.iter()) {
+            assert_abs_diff_eq!(g, w, epsilon = 1e-6);
+        }
+    }
+
+    #[test]
+    fn swiglu_gate_up_split_is_first_then_second_half() {
+        // gate_up all-zero except gate column 0 (index 0) and up column 0 (index
+        // hidden). Only when gate>0 (silu>0) AND up!=0 does hidden channel 0 fire.
+        let mut kern = Array2::<f32>::zeros((1, 4)); // in=1, 2*hidden=4 (hidden=2)
+        kern[[0, 0]] = 1.0; // gate[0] = x
+        kern[[0, 2]] = 1.0; // up[0]   = x  (index hidden=2)
+        let gate_up = Dense::new(kern, Array1::zeros(4));
+        let down = Dense::new(array![[1.0f32], [0.0]], Array1::zeros(1)); // read hidden[0]
+        let sw = SwiGlu { gate_up, down };
+        // x=2 -> gate[0]=2, up[0]=2 -> hidden[0]=silu(2)*2 > 0.
+        let out = sw.forward(&array![[2.0f32]]);
+        assert_abs_diff_eq!(out[[0, 0]], silu(2.0) * 2.0, epsilon = 1e-6);
+    }
+
+    #[test]
+    fn mixer_block_post_norm_shape_and_reference() {
+        // Tiny [B=2, T=3, C=4] block; token hidden=5, channel hidden=6.
+        let dense = |i: usize, o: usize, s: f32| {
+            Dense::new(
+                Array2::from_shape_fn((i, o), |(r, c)| (((r * 5 + c * 3) % 7) as f32 / 7.0 - 0.4) * s),
+                Array1::from_shape_fn(o, |j| 0.01 * j as f32),
+            )
+        };
+        let (t, c) = (3usize, 4usize);
+        let block = MlpMixerBlock {
+            token_mlp: SwiGlu { gate_up: dense(t, 2 * 5, 1.0), down: dense(5, t, 1.0) },
+            token_norm: RmsNorm::new(Array1::from_shape_fn(c, |i| 1.0 + 0.1 * i as f32)),
+            channel_mlp: SwiGlu { gate_up: dense(c, 2 * 6, 1.0), down: dense(6, c, 1.0) },
+            channel_norm: RmsNorm::new(Array1::from_shape_fn(c, |i| 0.9 + 0.05 * i as f32)),
+        };
+        let x = Array3::from_shape_fn((2, t, c), |(b, tt, cc)| {
+            0.3 + 0.2 * b as f32 - 0.1 * tt as f32 + 0.4 * cc as f32
+        });
+        let got = block.forward(&x);
+        assert_eq!(got.shape(), &[2, t, c]);
+
+        // Independent mirror of the post-norm token+channel mixing.
+        // Token mixing over T.
+        let xt = x
+            .view()
+            .permuted_axes([0, 2, 1])
+            .as_standard_layout()
+            .into_owned()
+            .into_shape_with_order((2 * c, t))
+            .unwrap();
+        let yt = block
+            .token_mlp
+            .forward(&xt)
+            .into_shape_with_order((2, c, t))
+            .unwrap()
+            .permuted_axes([0, 2, 1])
+            .as_standard_layout()
+            .into_owned();
+        let x1 = rms_norm_last_axis(&block.token_norm, &(&x + &yt));
+        let x1f = x1.clone().into_shape_with_order((2 * t, c)).unwrap();
+        let yc = block.channel_mlp.forward(&x1f).into_shape_with_order((2, t, c)).unwrap();
+        let want = rms_norm_last_axis(&block.channel_norm, &(&x1 + &yc));
+        for (g, w) in got.iter().zip(want.iter()) {
+            assert_abs_diff_eq!(g, w, epsilon = 1e-6);
+        }
     }
 }

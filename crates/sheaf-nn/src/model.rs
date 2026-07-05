@@ -16,8 +16,10 @@ use sheaf_core::solvers::{EncoderOutput, UnrolledCgParams, ZMode};
 use sheaf_core::tensor::{NodeState, RestrictionMaps};
 
 use crate::config::ExportedConfig;
-use crate::decoder::{mnist_mean_softmax_predict, ClassificationDecoder, ConcatMlpDecoderV2};
-use crate::encoder::{MlpEncoder, MlpEncoderV2};
+use crate::decoder::{
+    mnist_mean_softmax_predict, ClassificationDecoder, ConcatMlpDecoderV2, SudokuDecoder,
+};
+use crate::encoder::{MlpEncoder, MlpEncoderV2, SudokuEncoder};
 use crate::restriction_maps::{build_directional_restriction_maps, build_shared_restriction_maps};
 
 /// Learned base restriction maps, stacked `[K, d_e, d_v]` in
@@ -398,6 +400,205 @@ impl MnistSheafModel {
         for i in 0..k {
             let x_i = xs.index_axis(Axis(0), i).to_owned();
             let logits = self.decoder.forward(&x_i, patches);
+            out.index_axis_mut(Axis(0), i).assign(&logits);
+        }
+        out
+    }
+}
+
+// ===========================================================================
+// Sudoku Sheaf-ADMM model (MLP-Mixer SudokuEncoder -> soft_slice sudoku sharing
+// / sudoku-LoRA gather -> prox-mode ADMM -> per-cell SudokuDecoder).
+// ===========================================================================
+
+/// The full Sudoku Sheaf-ADMM model. Differs from the maze/mnist models in: the
+/// MLP-Mixer [`SudokuEncoder`] (`non_negative` objective), the 9 soft_slice base
+/// maps `R_indices [9, d_e, d_v]` gathered per-edge by cell-slot (`map_u`/
+/// `map_v`, carried on the graph's `dir_uv`/`dir_vu` tables), soft-consensus
+/// `prox`-mode CG, and the per-cell [`SudokuDecoder`]. The 27-agent 243-edge
+/// multigraph + `cell_ids` are built in `sheaf-io::views` and passed in per call.
+pub struct SudokuSheafModel {
+    pub config: ExportedConfig,
+    pub encoder: SudokuEncoder,
+    pub decoder: SudokuDecoder,
+    /// The 9 soft_slice base restriction maps `R_indices [9, d_e, d_v]`, one per
+    /// shared-cell slot (index 0..8 selected per endpoint by `map_u`/`map_v`).
+    pub r_indices: Array3<f32>,
+    /// Global cell ids seen by each agent, `[27, 9]` (0..80), for the encoder's
+    /// absolute-position `Embed(81)`.
+    pub cell_ids: Array2<i64>,
+    /// Export-baked learned penalty (config.baked.rho).
+    pub rho: f32,
+}
+
+/// Everything one Sudoku forward pass exposes (parity + prediction).
+pub struct SudokuForward {
+    pub history: AdmmHistory,
+    /// Decoded per-iteration per-cell logits `[K, N, B, 9, num_classes]`.
+    pub logits_per_iter: Array5<f32>,
+    pub final_state: AdmmState,
+    /// The assembled base maps `[E, 2, d_e, d_v]` (golden cross-check).
+    pub base_restriction_maps: RestrictionMaps,
+}
+
+impl SudokuForward {
+    /// Final-iterate per-agent per-cell logits `[N, B, 9, num_classes]`
+    /// (`logits_per_iter[K-1]`). Feed this to the 27-view reassembly + metrics.
+    pub fn logits_final(&self) -> Array4<f32> {
+        let k = self.logits_per_iter.shape()[0];
+        assert!(k > 0, "empty history");
+        self.logits_per_iter.index_axis(Axis(0), k - 1).to_owned()
+    }
+}
+
+impl SudokuSheafModel {
+    /// Mirrors the other models' `setup_admm`: encode, assemble the 9 soft_slice
+    /// base maps (gathered by `map_u`/`map_v` = the graph's slot tables), build
+    /// the (LoRA context / fixed) geometry, pick `z_init`, bake prox params.
+    #[allow(clippy::type_complexity)]
+    fn setup_admm(
+        &self,
+        patches: &Array4<f32>,
+        graph: &Arc<AgentGraph>,
+        num_iters: usize,
+    ) -> (
+        EncoderOutput,
+        Box<dyn SheafGeometry>,
+        RestrictionMaps,
+        UnrolledCgParams,
+        AdmmParams,
+        XSolverKind,
+        NodeState,
+    ) {
+        let m = &self.config.model;
+        assert_eq!(patches.shape()[0], graph.num_nodes, "patches N != graph N");
+        assert_eq!(self.r_indices.shape()[0], 9, "sudoku needs 9 base maps");
+        assert_eq!(
+            graph.dir_uv.len(),
+            graph.num_edges(),
+            "sudoku graph must carry map_u/map_v as dir_uv/dir_vu slot tables"
+        );
+
+        let enc_out = self.encoder.forward(patches, &self.cell_ids);
+        // Gather R_indices by cell-slot: base[e,0] = R[map_u[e]], base[e,1] =
+        // R[map_v[e]] (build_directional gathers by the graph's slot tables,
+        // which for sudoku ARE map_u/map_v). K = 9.
+        let base = build_directional_restriction_maps(&self.r_indices, graph);
+
+        let geometry: Box<dyn SheafGeometry> = match m.rm_mode.as_str() {
+            "context" => {
+                let lora = enc_out
+                    .lora
+                    .as_ref()
+                    .expect("rm_mode=context requires encoder LoRA factors");
+                // Sudoku LoRA gather: select the endpoint factors by cell-slot
+                // (map_u/map_v), which create_directional reads off the graph's
+                // dir_uv/dir_vu tables (K = 9). Mirrors create_sudoku_lora_geometry.
+                Box::new(LoraGeometry::create_directional(
+                    graph.clone(),
+                    base.clone(),
+                    &lora.a,
+                    &lora.b,
+                    lora.gate.as_ref(),
+                    lora.lora_alpha,
+                ))
+            }
+            "fixed" => Box::new(FixedGeometry::new(graph.clone(), base.clone())),
+            other => panic!("unknown rm_mode {other:?} (fixed|context)"),
+        };
+
+        let z_init = if m.z_init == "h" {
+            enc_out.h.clone()
+        } else {
+            NodeState::zeros(enc_out.h.raw_dim())
+        };
+
+        let z_params = UnrolledCgParams {
+            mode: match m.z_mode.as_str() {
+                "prox" => ZMode::Prox,
+                "project" => ZMode::Project,
+                other => panic!("unknown z_mode {other:?} (prox|project)"),
+            },
+            gamma: m.gamma,
+            num_iters: m.cg_iters,
+            tikhonov_eps: m.tikhonov_eps,
+        };
+        let admm_params = AdmmParams {
+            rho: self.rho,
+            alpha: m.relaxation_alpha,
+            gamma: m.gamma,
+            k: num_iters,
+        };
+        let x_solver = match m.x_solver.as_str() {
+            "diagonal_prox" => XSolverKind::DiagonalProx,
+            "simple" => XSolverKind::Simple,
+            other => panic!("unknown x_solver {other:?} (diagonal_prox|simple)"),
+        };
+        (enc_out, geometry, base, z_params, admm_params, x_solver, z_init)
+    }
+
+    /// Full forward with per-iteration history (mirrors `coordinate_history`),
+    /// decoding every `x^k` through the per-cell head.
+    /// `patches: [N, B, 9, num_classes]`; graph built per call.
+    pub fn forward(
+        &self,
+        patches: &Array4<f32>,
+        graph: Arc<AgentGraph>,
+        num_iters: usize,
+    ) -> SudokuForward {
+        let (enc_out, geometry, base, z_params, admm_params, x_solver, z_init) =
+            self.setup_admm(patches, &graph, num_iters);
+        let (final_state, history) = run_admm_history(
+            &enc_out,
+            geometry.as_ref(),
+            x_solver,
+            &z_params,
+            &admm_params,
+            &z_init,
+        );
+        let logits_per_iter = self.decode_x_iterates(&history.x);
+        SudokuForward {
+            history,
+            logits_per_iter,
+            final_state,
+            base_restriction_maps: base,
+        }
+    }
+
+    /// Training-style forward (mirrors `__call__`): run `num_iters` ADMM steps
+    /// and decode only the last `loss_window` x-iterates -> `[W,N,B,9,C]`.
+    pub fn forward_window(
+        &self,
+        patches: &Array4<f32>,
+        graph: Arc<AgentGraph>,
+        num_iters: usize,
+        loss_window: usize,
+    ) -> (AdmmState, Array5<f32>) {
+        let (enc_out, geometry, _base, z_params, admm_params, x_solver, z_init) =
+            self.setup_admm(patches, &graph, num_iters);
+        let (final_state, x_window) = run_admm(
+            &enc_out,
+            geometry.as_ref(),
+            x_solver,
+            &z_params,
+            &admm_params,
+            &z_init,
+            loss_window,
+        );
+        let stacked = stack_states(&x_window);
+        let logits = self.decode_x_iterates(&stacked);
+        (final_state, logits)
+    }
+
+    /// Decode a stack of x-iterates `[K, N, B, d_v]` through the per-cell head
+    /// -> `[K, N, B, 9, num_classes]` (sheaf_model.py `_decode_window`).
+    pub fn decode_x_iterates(&self, xs: &Array4<f32>) -> Array5<f32> {
+        let (k, n, b, _d_v) = xs.dim();
+        let c = self.decoder.num_classes;
+        let mut out = Array5::zeros((k, n, b, 9, c));
+        for i in 0..k {
+            let x_i = xs.index_axis(Axis(0), i).to_owned();
+            let logits = self.decoder.forward(&x_i);
             out.index_axis_mut(Axis(0), i).assign(&logits);
         }
         out

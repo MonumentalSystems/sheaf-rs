@@ -9,4 +9,4 @@ pub mod npz;
 pub mod views;
 pub mod weights;
 
-pub use weights::{load_maze_model, load_mnist_model, WeightCollection};
+pub use weights::{load_maze_model, load_mnist_model, load_sudoku_model, WeightCollection};

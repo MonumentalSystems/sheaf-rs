@@ -26,19 +26,31 @@ fn default_lora_alpha() -> f32 {
 #[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ModelConfig {
-    pub num_classes: usize,      // maze 6 / mnist 10 (OUTPUT classes)
-    pub d_v: usize,              // maze 10 / mnist 32
-    pub d_e: usize,              // maze 5 / mnist 24
-    pub encoder_arch: String,    // "mlp_v2" (maze) | "mlp" (mnist)
-    pub enc_hidden_dim: usize,   // 256
+    pub num_classes: usize,      // maze 6 / mnist 10 / sudoku 10 (OUTPUT classes)
+    pub d_v: usize,              // maze 10 / mnist 32 / sudoku 288
+    pub d_e: usize,              // maze 5 / mnist 24 / sudoku 32
+    pub encoder_arch: String,    // "mlp_v2" (maze) | "mlp" (mnist) | "sudoku"
+    /// mlp_v2 / mlp hidden width (256). Absent from the sudoku config (which
+    /// uses `enc_d_model`), so it carries a serde default.
+    #[serde(default)]
+    pub enc_hidden_dim: usize, // 256
+    /// sudoku Mixer token width (`enc_d_model = 128`). Absent from maze/mnist.
+    #[serde(default)]
+    pub enc_d_model: usize,
+    /// sudoku number of Mixer blocks (2). Absent from maze/mnist.
+    #[serde(default)]
+    pub enc_num_blocks: usize,
     pub comm_norm_type: String,  // "layernorm"
-    pub objective_mode: String,  // "l1box_diag" (maze) | "lasso" (mnist)
+    pub objective_mode: String,  // "l1box_diag" (maze) | "lasso" (mnist) | "non_negative" (sudoku)
     pub x_solver: String,        // "diagonal_prox"
     pub z_solver: String,        // "unrolled_cg"
-    pub z_mode: String,          // "prox" (maze) | "project" (mnist)
+    pub z_mode: String,          // "prox" (maze/sudoku) | "project" (mnist)
     #[serde(default)]
-    pub gamma: f32, // maze 5.0; unused by project-mode mnist
-    pub cg_iters: usize,   // 5
+    pub gamma: f32, // maze 5.0 / sudoku 2.0; unused by project-mode mnist
+    pub cg_iters: usize, // 5
+    /// project-mode `L + eps*I` Tikhonov term. Unused by prox mode (maze/sudoku),
+    /// so it carries a serde default for configs that omit it.
+    #[serde(default)]
     pub tikhonov_eps: f32, // 1e-5
     #[serde(default)]
     pub prox_init: String, // "legacy" (maze); unused by mnist inference
@@ -62,9 +74,13 @@ pub struct ModelConfig {
     /// mnist `lasso` scalar L1 weight (config, NOT learned). Absent for maze.
     #[serde(default)]
     pub l1_weight: Option<f32>,
-    pub decoder_arch: String, // "mlp_concat_v2" (maze) | "classification" (mnist)
+    pub decoder_arch: String, // "mlp_concat_v2" (maze) | "classification" (mnist) | "sudoku"
     #[serde(default)]
     pub dec_hidden_dim: usize, // maze 256 (mlp_concat_v2 hidden)
+    /// sudoku / classification decoder hidden dims (`[256]` for sudoku). Absent
+    /// for maze (which uses the scalar `dec_hidden_dim`).
+    #[serde(default)]
+    pub dec_hidden_dims: Vec<usize>,
     /// mnist classification linear head (`true`). Absent for maze.
     #[serde(default)]
     pub dec_linear_head: Option<bool>,
@@ -136,11 +152,16 @@ impl ExportedConfig {
         ensure!(m.z_solver == "unrolled_cg", "unsupported z_solver {:?}", m.z_solver);
         ensure!(m.z_mode == "prox" || m.z_mode == "project", "unknown z_mode {:?}", m.z_mode);
         ensure!(m.rm_mode == "context" || m.rm_mode == "fixed", "unknown rm_mode {:?}", m.rm_mode);
-        ensure!(m.num_directions == 4 || m.num_directions == 8, "num_directions must be 4 or 8, got {}", m.num_directions);
+        // 4/8 for grid tasks, 9 for sudoku cell-slots (per-task arm pins the exact value).
+        ensure!(
+            m.num_directions == 4 || m.num_directions == 8 || m.num_directions == 9,
+            "num_directions must be 4, 8, or 9, got {}",
+            m.num_directions
+        );
         ensure!(!m.lora_use_gate, "lora_use_gate is not shipped by any config (descoped)");
         ensure!(m.z_init == "h" || m.z_init == "zeros", "unknown z_init {:?}", m.z_init);
         ensure!(m.comm_norm_type == "layernorm", "unsupported comm_norm_type {:?}", m.comm_norm_type);
-        ensure!(m.rm_init == "orthonormal", "unsupported rm_init {:?}", m.rm_init);
+        // rm_init is task-dispatched below (orthonormal for grid tasks, soft_slice for sudoku).
         ensure!(m.lora_rank > 0, "lora_rank must be positive");
         ensure!(m.d_v > 0 && m.d_e > 0, "stalk dims must be positive");
         ensure!(m.cg_iters > 0, "cg_iters must be positive");
@@ -155,14 +176,33 @@ impl ExportedConfig {
                 ensure!(m.decoder_arch == "mlp_concat_v2", "unsupported decoder_arch {:?} (maze scope)", m.decoder_arch);
                 ensure!(m.objective_mode == "l1box_diag", "unsupported objective_mode {:?} (maze scope)", m.objective_mode);
                 ensure!(m.rm_sharing == "directional", "unsupported rm_sharing {:?} (maze scope)", m.rm_sharing);
+                ensure!(m.rm_init == "orthonormal", "unsupported rm_init {:?} (maze scope: orthonormal)", m.rm_init);
+                ensure!(m.num_directions == 4 || m.num_directions == 8, "maze num_directions must be 4 or 8");
                 ensure!(m.prox_init == "legacy", "unsupported prox_init {:?} ('warm' is training-only, dropped)", m.prox_init);
                 ensure!(m.gamma > 0.0, "maze gamma must be positive");
+            }
+            "sudoku" => {
+                ensure!(m.encoder_arch == "sudoku", "unsupported encoder_arch {:?} (sudoku scope: sudoku)", m.encoder_arch);
+                ensure!(m.decoder_arch == "sudoku", "unsupported decoder_arch {:?} (sudoku scope: sudoku)", m.decoder_arch);
+                ensure!(m.objective_mode == "non_negative", "unsupported objective_mode {:?} (sudoku scope: non_negative)", m.objective_mode);
+                ensure!(m.rm_sharing == "sudoku", "unsupported rm_sharing {:?} (sudoku scope: sudoku)", m.rm_sharing);
+                ensure!(m.rm_init == "soft_slice", "unsupported rm_init {:?} (sudoku scope: soft_slice)", m.rm_init);
+                ensure!(m.num_directions == 9, "sudoku num_directions must be 9 (cell-slots), got {}", m.num_directions);
+                ensure!(m.z_mode == "prox", "sudoku uses soft-consensus z_mode=prox, got {:?}", m.z_mode);
+                ensure!(m.gamma > 0.0, "sudoku gamma must be positive");
+                ensure!(m.d_v.is_multiple_of(9), "sudoku d_v must be divisible by 9 (contiguous cell blocks), got {}", m.d_v);
+                ensure!(9 * m.d_e <= m.d_v, "sudoku soft_slice needs 9*d_e <= d_v (got 9*{}={} > {})", m.d_e, 9 * m.d_e, m.d_v);
+                ensure!(m.enc_d_model > 0, "sudoku enc_d_model must be positive");
+                ensure!(m.enc_num_blocks > 0, "sudoku enc_num_blocks must be positive");
+                ensure!(!m.dec_hidden_dims.is_empty(), "sudoku dec_hidden_dims must be non-empty");
             }
             "mnist" => {
                 ensure!(m.encoder_arch == "mlp", "unsupported encoder_arch {:?} (mnist scope: mlp)", m.encoder_arch);
                 ensure!(m.decoder_arch == "classification", "unsupported decoder_arch {:?} (mnist scope: classification)", m.decoder_arch);
                 ensure!(m.objective_mode == "lasso", "unsupported objective_mode {:?} (mnist scope: lasso)", m.objective_mode);
                 ensure!(m.rm_sharing == "global", "unsupported rm_sharing {:?} (mnist scope: global)", m.rm_sharing);
+                ensure!(m.rm_init == "orthonormal", "unsupported rm_init {:?} (mnist scope: orthonormal)", m.rm_init);
+                ensure!(m.num_directions == 4 || m.num_directions == 8, "mnist num_directions must be 4 or 8");
                 ensure!(m.z_mode == "project", "mnist uses hard-consensus z_mode=project, got {:?}", m.z_mode);
                 ensure!(
                     m.dec_linear_head == Some(true),
@@ -182,7 +222,7 @@ impl ExportedConfig {
                     None => anyhow::bail!("mnist lasso config must carry model.l1_weight (scalar)"),
                 }
             }
-            other => anyhow::bail!("unsupported task {other:?} (maze|mnist scope)"),
+            other => anyhow::bail!("unsupported task {other:?} (maze|mnist|sudoku scope)"),
         }
         Ok(())
     }
@@ -323,6 +363,77 @@ mod tests {
         ] {
             let json = MNIST_JSON.replace(from, to);
             assert_ne!(json, MNIST_JSON, "replacement {from} did not apply");
+            assert!(ExportedConfig::from_json(&json).is_err(), "must reject {to}");
+        }
+    }
+
+    /// Phase C: the shipped sudoku configs (`sudoku_sheaf.yaml` /
+    /// `sudoku_sheaf_lora.yaml`). Mixer encoder, non_negative, soft_slice
+    /// sudoku sharing, 9 cell-slots, sudoku decoder.
+    const SUDOKU_JSON: &str = r#"{
+      "model": {
+        "num_classes": 10, "d_v": 288, "d_e": 32,
+        "encoder_arch": "sudoku", "enc_d_model": 128, "enc_num_blocks": 2,
+        "comm_norm_type": "layernorm",
+        "objective_mode": "non_negative", "x_solver": "diagonal_prox",
+        "z_solver": "unrolled_cg", "z_mode": "prox", "gamma": 2.0,
+        "cg_iters": 5, "tikhonov_eps": 1e-5,
+        "rm_sharing": "sudoku", "rm_init": "soft_slice", "rm_mode": "context",
+        "lora_rank": 4, "lora_alpha": 1.0, "lora_init_style": "standard",
+        "num_directions": 9,
+        "relaxation_alpha": 1.0, "z_init": "h", "q_epsilon": 1e-4,
+        "decoder_arch": "sudoku", "dec_hidden_dims": [256]
+      },
+      "task": {
+        "task": "sudoku", "patch_size": 3, "stride": 3, "connectivity": 8,
+        "num_classes": 10, "k_eval": 50, "loss_window": 2
+      },
+      "baked": { "rho": 0.28 }
+    }"#;
+
+    #[test]
+    fn parses_the_sudoku_config() {
+        let cfg = ExportedConfig::from_json(SUDOKU_JSON).expect("sudoku config must parse");
+        assert_eq!(cfg.model.d_v, 288);
+        assert_eq!(cfg.model.d_e, 32);
+        assert_eq!(cfg.model.enc_d_model, 128);
+        assert_eq!(cfg.model.enc_num_blocks, 2);
+        assert_eq!(cfg.model.encoder_arch, "sudoku");
+        assert_eq!(cfg.model.decoder_arch, "sudoku");
+        assert_eq!(cfg.model.objective_mode, "non_negative");
+        assert_eq!(cfg.model.rm_sharing, "sudoku");
+        assert_eq!(cfg.model.rm_init, "soft_slice");
+        assert_eq!(cfg.model.num_directions, 9);
+        assert_eq!(cfg.model.gamma, 2.0);
+        assert_eq!(cfg.model.dec_hidden_dims, vec![256]);
+        assert_eq!(cfg.task.task, "sudoku");
+        assert_eq!(cfg.baked.rho, 0.28);
+        // enc_hidden_dim / dec_hidden_dim / l1_weight default when omitted.
+        assert_eq!(cfg.model.enc_hidden_dim, 0);
+        assert_eq!(cfg.model.l1_weight, None);
+    }
+
+    /// The fixed variant (`rm_mode = "fixed"`) must also validate.
+    #[test]
+    fn parses_the_sudoku_fixed_config() {
+        let json = SUDOKU_JSON.replace(r#""rm_mode": "context""#, r#""rm_mode": "fixed""#);
+        let cfg = ExportedConfig::from_json(&json).expect("sudoku fixed config must parse");
+        assert_eq!(cfg.model.rm_mode, "fixed");
+    }
+
+    #[test]
+    fn rejects_out_of_scope_sudoku_configs() {
+        for (from, to) in [
+            (r#""encoder_arch": "sudoku""#, r#""encoder_arch": "mlp""#),
+            (r#""decoder_arch": "sudoku""#, r#""decoder_arch": "classification""#),
+            (r#""objective_mode": "non_negative""#, r#""objective_mode": "lasso""#),
+            (r#""rm_sharing": "sudoku""#, r#""rm_sharing": "directional""#),
+            (r#""rm_init": "soft_slice""#, r#""rm_init": "orthonormal""#),
+            (r#""num_directions": 9"#, r#""num_directions": 8"#),
+            (r#""z_mode": "prox""#, r#""z_mode": "project""#),
+        ] {
+            let json = SUDOKU_JSON.replace(from, to);
+            assert_ne!(json, SUDOKU_JSON, "replacement {from} did not apply");
             assert!(ExportedConfig::from_json(&json).is_err(), "must reject {to}");
         }
     }
