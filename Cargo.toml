@@ -27,7 +27,7 @@ approx = "0.5"
 anyhow = "1"
 half = "2"
 
-# Intra-workspace
-sheaf-core = { path = "crates/sheaf-core" }
-sheaf-io = { path = "crates/sheaf-io" }
-sheaf-nn = { path = "crates/sheaf-nn" }
+# Intra-workspace (version is required for crates.io publishing; path wins locally)
+sheaf-core = { path = "crates/sheaf-core", version = "0.1.0" }
+sheaf-io = { path = "crates/sheaf-io", version = "0.1.0" }
+sheaf-nn = { path = "crates/sheaf-nn", version = "0.1.0" }

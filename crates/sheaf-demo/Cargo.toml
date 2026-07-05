@@ -5,6 +5,9 @@ edition.workspace = true
 license.workspace = true
 repository.workspace = true
 description = "Native demo + CI-facing golden replay binaries"
+# Not published: the binaries load weights/fixtures from the repo's goldens/
+# directory, which a `cargo install`ed copy would not have.
+publish = false
 
 [dependencies]
 ndarray = { workspace = true }

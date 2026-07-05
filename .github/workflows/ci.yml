@@ -1,0 +1,31 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+      - uses: Swatinem/rust-cache@v2
+      - name: Build
+        run: cargo build --workspace --all-targets
+      - name: Clippy
+        run: cargo clippy --workspace --all-targets -- -D warnings
+      - name: Tests
+        run: cargo test --workspace
+      - name: Golden parity vs JAX reference
+        run: cargo run --release -p sheaf-demo --bin parity_check
+      - name: Demo smoke run
+        run: cargo run --release -p sheaf-demo --bin maze_demo -- --no-anim --k 40 --seed 7
+      - name: Package check (publishable crates)
+        run: cargo package -p sheaf-core -p sheaf-io -p sheaf-nn

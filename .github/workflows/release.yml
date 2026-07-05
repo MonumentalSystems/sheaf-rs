@@ -1,0 +1,62 @@
+# Publishes sheaf-core, sheaf-io, sheaf-nn to crates.io (in dependency order)
+# when a v* tag is pushed. sheaf-demo is publish = false (repo-only binaries).
+#
+# Requires the repository secret CARGO_REGISTRY_TOKEN (a crates.io API token
+# with publish-new + publish-update scope). After the first publish, this can
+# be migrated to crates.io Trusted Publishing (OIDC) and the secret dropped.
+#
+# Release procedure:
+#   1. bump [workspace.package].version and the three intra-workspace dep
+#      versions in the root Cargo.toml (they must match)
+#   2. commit, then: git tag v<version> && git push origin v<version>
+name: Release to crates.io
+
+on:
+  push:
+    tags: ["v*"]
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    environment: crates-io
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Check tag matches workspace version
+        run: |
+          v=$(cargo metadata --no-deps --format-version 1 | jq -r '.packages[] | select(.name=="sheaf-core") | .version')
+          [ "v$v" = "${GITHUB_REF_NAME}" ] || { echo "tag ${GITHUB_REF_NAME} != workspace version v$v"; exit 1; }
+
+      - name: Tests
+        run: cargo test --workspace
+
+      - name: Golden parity vs JAX reference
+        run: cargo run --release -p sheaf-demo --bin parity_check
+
+      # cargo publish (1.66+) waits for each crate to be available in the
+      # sparse index before returning, so sequential publishes are safe.
+      - name: Publish sheaf-core
+        run: cargo publish -p sheaf-core --locked
+        env:
+          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
+      - name: Publish sheaf-io
+        run: cargo publish -p sheaf-io --locked
+        env:
+          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
+      - name: Publish sheaf-nn
+        run: cargo publish -p sheaf-nn --locked
+        env:
+          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
+
+      - name: GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "${GITHUB_REF_NAME}" \
+            --title "sheaf-rs ${GITHUB_REF_NAME}" \
+            --notes "Published sheaf-core, sheaf-io, sheaf-nn ${GITHUB_REF_NAME#v} to crates.io."
