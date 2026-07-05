@@ -15,6 +15,10 @@ anyhow = { workspace = true }
 sheaf-core = { workspace = true }
 sheaf-io = { workspace = true }
 sheaf-nn = { workspace = true }
+# viz_export: joint-PCA SVD (PLAN.md §1 viz note pins faer 0.22).
+faer = "0.22.6"
+# maze_demo --gif: animated GIF encoding (`image` wraps the `gif` crate).
+image = { version = "0.25.6", default-features = false, features = ["gif"] }
 
 [[bin]]
 name = "parity_check"
@@ -23,3 +27,7 @@ path = "src/bin/parity_check.rs"
 [[bin]]
 name = "maze_demo"
 path = "src/bin/maze_demo.rs"
+
+[[bin]]
+name = "viz_export"
+path = "src/bin/viz_export.rs"

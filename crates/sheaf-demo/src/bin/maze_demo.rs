@@ -5,14 +5,16 @@
 //!
 //! Usage:
 //!   maze_demo [--weights P] [--config P] [--batch P] [--maze-from-batch]
-//!             [--seed N] [--k N] [--fps F] [--no-anim]
+//!             [--seed N] [--k N] [--fps F] [--no-anim] [--gif OUT.gif]
 //!
 //! Defaults: goldens/maze/{weights.safetensors, config.json, batch.npz},
 //! a fresh generated maze (--seed 0), K=40, 8 fps.
 //!
 //! --maze-from-batch replays the golden batch input (all rows; row 0 is
 //! rendered). --no-anim prints first/middle/last frames plus the residual
-//! summary — CI/log friendly, no cursor control.
+//! summary — CI/log friendly, no cursor control. --gif additionally writes
+//! the animate-to-K run (the same per-iteration argmax frames the terminal
+//! shows, batch row 0) as a looping animated GIF at --fps, last frame held.
 
 use std::io::Write as _;
 use std::path::PathBuf;
@@ -40,6 +42,7 @@ struct Args {
     k: usize,
     fps: f64,
     no_anim: bool,
+    gif: Option<PathBuf>,
 }
 
 fn goldens_dir() -> PathBuf {
@@ -57,6 +60,7 @@ fn parse_args() -> anyhow::Result<Args> {
         k: 40,
         fps: 8.0,
         no_anim: false,
+        gif: None,
     };
     let mut it = std::env::args().skip(1);
     while let Some(a) = it.next() {
@@ -73,10 +77,11 @@ fn parse_args() -> anyhow::Result<Args> {
             "--k" => args.k = val("--k")?.parse()?,
             "--fps" => args.fps = val("--fps")?.parse()?,
             "--no-anim" => args.no_anim = true,
+            "--gif" => args.gif = Some(PathBuf::from(val("--gif")?)),
             "--help" | "-h" => {
                 println!(
                     "maze_demo [--weights P] [--config P] [--batch P] [--maze-from-batch] \
-                     [--seed N] [--k N] [--fps F] [--no-anim]"
+                     [--seed N] [--k N] [--fps F] [--no-anim] [--gif OUT.gif]"
                 );
                 std::process::exit(0);
             }
@@ -143,6 +148,92 @@ fn render_frame(
 fn rms(v: ndarray::ArrayView2<f32>) -> f32 {
     let n = v.len() as f32;
     (v.iter().map(|&x| x * x).sum::<f32>() / n).sqrt()
+}
+
+/// RGB palette for the GIF frames — same classes as `cell()`:
+/// wall #303030, free #d0d0d0, start #00af00, goal #d70000, path #ffd700,
+/// pad #121212 (the exact sRGB values of the ANSI-256 codes used above).
+fn class_rgb(class: i64) -> [u8; 3] {
+    match class {
+        1 => [0x30, 0x30, 0x30],
+        2 => [0xd0, 0xd0, 0xd0],
+        3 => [0x00, 0xaf, 0x00],
+        4 => [0xd7, 0x00, 0x00],
+        5 => [0xff, 0xd7, 0x00],
+        _ => [0x12, 0x12, 0x12],
+    }
+}
+
+/// Pixels per maze cell in the GIF.
+const GIF_CELL: u32 = 12;
+/// Height of the iteration progress strip at the bottom.
+const GIF_STRIP: u32 = 5;
+
+/// Rasterize one prediction frame: the argmax grid (as in the terminal
+/// renderer), the TRUE start/goal cells outlined white, and a bottom
+/// progress strip filling with the iteration count.
+fn render_gif_frame(
+    k: usize,
+    k_total: usize,
+    pred: &Array2<i64>,
+    tokens: &Array2<i64>,
+) -> image::RgbaImage {
+    let (h, w) = pred.dim();
+    let (pw, ph) = (w as u32 * GIF_CELL, h as u32 * GIF_CELL + GIF_STRIP);
+    let mut img = image::RgbaImage::new(pw, ph);
+    for y in 0..h {
+        for x in 0..w {
+            let [r, g, b] = class_rgb(pred[[y, x]]);
+            let outline = matches!(tokens[[y, x]], TOKEN_START | TOKEN_GOAL);
+            for py in 0..GIF_CELL {
+                for px in 0..GIF_CELL {
+                    // 1px white outline marks the true start/goal (the S/G
+                    // letters of the terminal renderer).
+                    let edge = py == 0 || px == 0 || py == GIF_CELL - 1 || px == GIF_CELL - 1;
+                    let rgba = if outline && edge {
+                        image::Rgba([0xff, 0xff, 0xff, 0xff])
+                    } else {
+                        image::Rgba([r, g, b, 0xff])
+                    };
+                    img.put_pixel(x as u32 * GIF_CELL + px, y as u32 * GIF_CELL + py, rgba);
+                }
+            }
+        }
+    }
+    // Progress strip: iterations completed, white on near-black.
+    let fill = ((k + 1) as f64 / k_total as f64 * pw as f64).round() as u32;
+    for py in 0..GIF_STRIP {
+        for px in 0..pw {
+            let on = px < fill && py > 0;
+            let v = if on { 0xe5 } else { 0x12 };
+            img.put_pixel(px, h as u32 * GIF_CELL + py, image::Rgba([v, v, v, 0xff]));
+        }
+    }
+    img
+}
+
+/// Encode all per-iteration frames as a looping animated GIF at `fps`
+/// (the final frame is held ~1.5 s so the converged prediction reads).
+fn write_gif(
+    path: &std::path::Path,
+    preds: &[Array2<i64>],
+    tokens: &Array2<i64>,
+    fps: f64,
+) -> anyhow::Result<()> {
+    use image::codecs::gif::{GifEncoder, Repeat};
+    let file = std::fs::File::create(path)
+        .map_err(|e| anyhow::anyhow!("creating {}: {e}", path.display()))?;
+    let mut enc = GifEncoder::new_with_speed(std::io::BufWriter::new(file), 10);
+    enc.set_repeat(Repeat::Infinite)?;
+    let k_total = preds.len();
+    let frame_ms = (1000.0 / fps).round().max(10.0) as u32;
+    for (k, pred) in preds.iter().enumerate() {
+        let img = render_gif_frame(k, k_total, pred, tokens);
+        let ms = if k + 1 == k_total { frame_ms.max(1500) } else { frame_ms };
+        let delay = image::Delay::from_numer_denom_ms(ms, 1);
+        enc.encode_frame(image::Frame::from_parts(img, 0, 0, delay))?;
+    }
+    Ok(())
 }
 
 fn main() -> ExitCode {
@@ -244,6 +335,19 @@ fn run() -> anyhow::Result<()> {
             "non-finite residuals at iteration {k} (cons={cons}, primal={primal}, dual={dual})"
         );
         metrics.push((cons, primal, dual));
+    }
+
+    // ---- optional GIF export (image + gif crates; PLAN.md §6) ----
+    if let Some(path) = &args.gif {
+        write_gif(path, &preds, &tokens0, args.fps)?;
+        let bytes = std::fs::metadata(path)?.len();
+        println!(
+            "wrote {} ({} frames, {}x{} px, {bytes} bytes)",
+            path.display(),
+            preds.len(),
+            w as u32 * GIF_CELL,
+            h as u32 * GIF_CELL + GIF_STRIP,
+        );
     }
 
     println!(
