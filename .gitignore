@@ -1,6 +1,8 @@
 # Build
 /target
 **/*.rs.bk
+# wasm-bindgen output for the browser demo (built by CI / README "WASM build")
+/web/pkg/
 
 # Demo/export outputs (NOT the goldens: goldens/**/*.npz etc. ARE committed)
 /outputs/

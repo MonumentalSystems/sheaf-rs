@@ -83,7 +83,7 @@ prediction grid (exact).
 **Maze task only** (`configs/experiment/maze_sheaf.yaml`): MLPEncoderV2,
 l1box_diag objective, LoRA rank-4 directional geometry (8-way),
 ConcatMLPDecoderV2, prox-mode unrolled CG (T=5), d_v=10, d_e=5.
-MNIST, sudoku, the MPNN baseline, WASM, and **training** are out of scope —
+MNIST, sudoku, the MPNN baseline, and **training** are out of scope —
 training stays in Python; this repo consumes exported weights
 (`weights.safetensors`, EMA collection by default) and golden fixtures whose
 exact layout is pinned in `goldens/CONTRACT.md`.
@@ -99,8 +99,61 @@ exact layout is pinned in `goldens/CONTRACT.md`.
   (patchify / grid edges / overlap-mean reassembly), maze generator.
 - `crates/sheaf-demo` — native binaries: `maze_demo` (ANSI animation),
   `parity_check` (golden replay for CI).
+- `crates/sheaf-web` — the wasm-bindgen session for the browser demo: embedded
+  f16 EMA weights, `generate_maze` + `SheafSession` (solve / per-iteration
+  frames / residuals / agent diagnostics). Logic is plain Rust, tested natively.
+- `web/` — the static browser demo (vanilla HTML/JS/CSS, no external
+  requests); `web/pkg/` is gitignored wasm-bindgen build output.
 - `goldens/` — committed golden fixtures + `CONTRACT.md` (the exporter/consumer
   interface).
+
+## Browser demo
+
+**Live demo: <https://monumentalsystems.github.io/sheaf-rs/>** — the maze
+solver running as pure Rust compiled to WebAssembly, entirely in your browser
+(no server, no external requests). Generate or hand-edit a 19×19 maze (or a
+37×37 out-of-distribution one), press Solve, and scrub/play the ADMM
+iterations: the solution path crystallizes out of local disagreement while
+the residual chart plummets. Hovering the maze inspects the nearest agent's
+patch and per-agent consistency. Deployed automatically by
+`.github/workflows/pages.yml` on every push to `main`.
+
+Local development:
+
+```sh
+# Toolchain pins: wasm32-unknown-unknown + wasm-bindgen-cli 0.2.126
+# (must match the wasm-bindgen crate pin in crates/sheaf-web/Cargo.toml).
+rustup target add wasm32-unknown-unknown
+cargo install wasm-bindgen-cli --version 0.2.126 --locked
+
+# Build + bindgen into web/pkg/ (gitignored build output; sheaf_web_bg.wasm
+# is ~0.93 MB, embedded f16 EMA weights included).
+cargo build --target wasm32-unknown-unknown --release -p sheaf-web
+wasm-bindgen --target web --out-dir web/pkg \
+    target/wasm32-unknown-unknown/release/sheaf_web.wasm
+
+# Serve the static page (any static server works).
+python3 -m http.server 8000 --directory web
+# open http://localhost:8000/
+```
+
+**Mock mode:** open `http://localhost:8000/?mock=1` to run the UI against
+`web/mock/sheaf_web.js` — a pure-JS stand-in for the wasm module (same API
+contract, BFS "solver", synthetic residuals) — so the UI is developable
+without the Rust toolchain. `node web/test/ui_smoke.mjs` smoke-tests the UI
+helpers + mock; point it at a real `wasm-bindgen --target nodejs` build with
+`SHEAF_WEB_MODULE=/path/to/nodejs-pkg/sheaf_web.js`.
+
+Other WASM notes:
+
+```sh
+# Regenerate the embedded f16 EMA weights (only needed after retraining;
+# crates/sheaf-web/assets/weights_ema_f16.safetensors is committed).
+uv run --directory <sheaf-admm checkout> python tools/convert_f16.py
+
+# Native mirror of the wasm session logic (no wasm toolchain needed).
+cargo test -p sheaf-web
+```
 
 ## License
 

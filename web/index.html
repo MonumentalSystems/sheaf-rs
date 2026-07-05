@@ -1,0 +1,100 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>sheaf-rs — watch 81 agents agree on a maze</title>
+  <link rel="icon" type="image/svg+xml" href="./favicon.svg" />
+  <link rel="stylesheet" href="./style.css" />
+</head>
+<body>
+  <header>
+    <h1>sheaf-rs — watch 81 agents agree on a maze</h1>
+    <p class="sub">
+      Each 3×3 patch of the maze belongs to one local agent; learned sheaf
+      restriction maps say how neighbors must agree, and an ADMM loop drives
+      the 81 agents to a consensus that decodes to the solution path —
+      running as pure Rust compiled to WebAssembly, entirely in your browser.
+    </p>
+  </header>
+
+  <div id="banner" class="banner" hidden></div>
+
+  <main>
+    <section class="pane left">
+      <div class="maze-wrap">
+        <canvas id="maze" width="570" height="570"></canvas>
+        <div id="warning" class="warning" hidden>
+          no path exists — agents will disagree
+        </div>
+        <div id="stale" class="stale" hidden>
+          maze edited — press Solve to re-run
+        </div>
+      </div>
+
+      <div class="controls">
+        <div class="row">
+          <label for="seed">seed</label>
+          <input id="seed" type="number" value="42" min="0" step="1" />
+          <button id="generate">Generate</button>
+          <button id="random">Random</button>
+        </div>
+        <div class="row">
+          <span class="lbl">size</span>
+          <label class="radio">
+            <input type="radio" name="size" value="19" checked /> 19×19
+          </label>
+          <label class="radio">
+            <input type="radio" name="size" value="37" /> 37×37
+            <span class="ood-tag">out-of-distribution</span>
+          </label>
+        </div>
+        <div class="row">
+          <label class="radio">
+            <input type="checkbox" id="editMode" />
+            edit mode <span class="hint">(click toggles wall/empty; drag S/G)</span>
+          </label>
+          <button id="solve" class="accent">Solve</button>
+        </div>
+        <div class="row">
+          <button id="play">play</button>
+          <input id="iter" type="range" min="0" max="0" value="0" disabled />
+          <span id="iterLabel" class="num">—</span>
+        </div>
+        <div class="row">
+          <span id="status" class="status num"></span>
+        </div>
+        <div class="row hint">space = play/pause · arrows = step</div>
+      </div>
+    </section>
+
+    <section class="pane right">
+      <h2>residuals <span class="hint">(log scale, per ADMM iteration)</span></h2>
+      <div class="legend num">
+        <span><i class="sw" id="sw-consistency"></i>consistency
+          <b id="v-consistency">—</b></span>
+        <span><i class="sw" id="sw-primal"></i>primal
+          <b id="v-primal">—</b></span>
+        <span><i class="sw" id="sw-dual"></i>dual
+          <b id="v-dual">—</b></span>
+      </div>
+      <canvas id="chart" width="440" height="300"></canvas>
+      <label class="radio overlay-toggle">
+        <input type="checkbox" id="overlay" checked />
+        agent-lattice hover overlay
+      </label>
+      <div id="agentReadout" class="readout num">hover the maze to inspect an agent</div>
+    </section>
+  </main>
+
+  <footer>
+    <a href="https://github.com/SakanaAI/sheaf-admm">Rust port of
+      SakanaAI/sheaf-admm (Apache-2.0)</a>
+    <span class="sep">·</span>
+    <span>weights: a 30-epoch small-dataset training run (99.6% solved
+      in-distribution), not a paper reproduction</span>
+  </footer>
+
+  <script type="module" src="./app.js"></script>
+</body>
+</html>

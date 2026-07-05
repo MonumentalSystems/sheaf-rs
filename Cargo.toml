@@ -5,6 +5,7 @@ members = [
     "crates/sheaf-io",
     "crates/sheaf-nn",
     "crates/sheaf-demo",
+    "crates/sheaf-web",
 ]
 
 [workspace.package]

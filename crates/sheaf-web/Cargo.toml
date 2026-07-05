@@ -1,0 +1,22 @@
+[package]
+name = "sheaf-web"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+publish = false
+description = "In-browser WASM session: embedded f16 EMA maze weights + wasm-bindgen API"
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+ndarray = { workspace = true }
+sheaf-core = { workspace = true }
+sheaf-io = { workspace = true }
+sheaf-nn = { workspace = true }
+
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+# Pinned exactly: wasm-bindgen-cli must match (cargo install wasm-bindgen-cli
+# --version 0.2.126 --locked).
+wasm-bindgen = "=0.2.126"

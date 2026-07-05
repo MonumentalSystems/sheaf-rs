@@ -214,15 +214,9 @@ impl<'a> Tree<'a> {
     }
 }
 
-/// Load `config.json` + `weights.safetensors` into a ready-to-run model.
-pub fn load_maze_model(
-    config_path: &Path,
-    weights_path: &Path,
-    collection: WeightCollection,
-) -> anyhow::Result<SheafAdmmModel> {
-    let config = load_config(config_path)?;
+/// Maze scope guards: this loader only understands the shipped maze config.
+fn maze_scope_guards(config: &ExportedConfig) -> anyhow::Result<()> {
     let m = &config.model;
-    // Maze scope guards: this loader only understands the shipped maze config.
     ensure!(m.encoder_arch == "mlp_v2", "unsupported encoder_arch {:?}", m.encoder_arch);
     ensure!(
         m.decoder_arch == "mlp_concat_v2",
@@ -240,6 +234,17 @@ pub fn load_maze_model(
         m.objective_mode
     );
     ensure!(config.task.task == "maze", "unsupported task {:?}", config.task.task);
+    Ok(())
+}
+
+/// Load `config.json` + `weights.safetensors` into a ready-to-run model.
+pub fn load_maze_model(
+    config_path: &Path,
+    weights_path: &Path,
+    collection: WeightCollection,
+) -> anyhow::Result<SheafAdmmModel> {
+    let config = load_config(config_path)?;
+    maze_scope_guards(&config)?;
 
     let bytes = std::fs::read(weights_path)
         .with_context(|| format!("reading weights {}", weights_path.display()))?;
@@ -260,7 +265,44 @@ pub fn load_maze_model(
         );
     }
 
-    let mut tree = Tree::load(&st, collection.prefix(), &expected)?;
+    build_model(config, &st, collection)
+}
+
+/// Load a model from in-memory config JSON + safetensors bytes — the wasm
+/// embedding path (`include_str!` / `include_bytes!`).
+///
+/// Unlike [`load_maze_model`], only the **requested** collection must be
+/// present and satisfy the manifest: the f16 wasm embedding ships the
+/// `ema_params/` tree alone to halve the payload. Keys outside the two known
+/// collections are still rejected.
+pub fn load_maze_model_from_bytes(
+    config_json: &str,
+    weights_bytes: &[u8],
+    collection: WeightCollection,
+) -> anyhow::Result<SheafAdmmModel> {
+    let config: ExportedConfig =
+        serde_json::from_str(config_json).context("parsing embedded config JSON")?;
+    maze_scope_guards(&config)?;
+    let st = SafeTensors::deserialize(weights_bytes).context("parsing safetensors bytes")?;
+    for (name, _) in st.iter() {
+        ensure!(
+            name.starts_with("params/") || name.starts_with("ema_params/"),
+            "unexpected top-level key {name:?} (want params/... or ema_params/...)"
+        );
+    }
+    build_model(config, &st, collection)
+}
+
+/// Materialize the requested collection into typed structs (shared tail of
+/// both loaders; the collection is manifest-checked here).
+fn build_model(
+    config: ExportedConfig,
+    st: &SafeTensors,
+    collection: WeightCollection,
+) -> anyhow::Result<SheafAdmmModel> {
+    let m = &config.model;
+    let expected = expected_keys(&config);
+    let mut tree = Tree::load(st, collection.prefix(), &expected)?;
 
     let encoder = MlpEncoderV2 {
         params: MlpEncoderV2Params {
