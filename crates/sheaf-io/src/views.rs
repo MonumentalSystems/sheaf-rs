@@ -152,6 +152,48 @@ pub fn prepare_maze_patches(
     patches
 }
 
+/// Plain zero-padded patch extraction over a float image batch (the MNIST
+/// path). Ports `patchify_batch_jax`: the image is zero-padded by
+/// `patch_size // 2` on each spatial side, then a `patch_size` patch is sliced
+/// with its top-left at each center on the padded grid (so the patch stays
+/// centered on the original center).
+///
+/// `images: [B, H, W, C]` f32, `centers: [N, 2]` (y, x) -> `[N, B, ps, ps, C]`.
+/// Unlike `prepare_maze_patches` there is no wall border and no one-hot: MNIST
+/// feeds raw normalized pixels (C = 1).
+pub fn patchify_batch(
+    images: &Array4<f32>,
+    centers: &Array2<i64>,
+    patch_size: usize,
+) -> Array5<f32> {
+    assert!(patch_size > 0, "patch_size must be positive");
+    let (b, h, w, c) = images.dim();
+    let n = centers.nrows();
+    let pad = (patch_size / 2) as i64;
+
+    let mut patches = Array5::<f32>::zeros((n, b, patch_size, patch_size, c));
+    for (a, row) in centers.rows().into_iter().enumerate() {
+        let (cy, cx) = (row[0], row[1]);
+        for py in 0..patch_size {
+            for px in 0..patch_size {
+                // padded coord (cy+py, cx+px) maps to image coord minus pad.
+                let iy = cy + py as i64 - pad;
+                let ix = cx + px as i64 - pad;
+                if iy < 0 || ix < 0 || iy >= h as i64 || ix >= w as i64 {
+                    continue; // zero pad
+                }
+                for bi in 0..b {
+                    for ch in 0..c {
+                        patches[[a, bi, py, px, ch]] =
+                            images[[bi, iy as usize, ix as usize, ch]];
+                    }
+                }
+            }
+        }
+    }
+    patches
+}
+
 /// In-bounds image span and matching local-patch origin for one agent.
 /// Ports `_overlap_slices`: returns `((y_start, y_end), (x_start, x_end),
 /// patch_y_start, patch_x_start)`.
@@ -343,6 +385,73 @@ mod tests {
                         "py={py} px={px} ch={ch}"
                     );
                 }
+            }
+        }
+    }
+
+    #[test]
+    fn mnist_grid_is_81_agents_8conn() {
+        // PLAN §3.5: 28x28, patch_size 3, stride 3 -> 9x9 centers = 81 agents.
+        let centers = grid_agent_centers((28, 28), 3, 3);
+        assert_eq!(centers.nrows(), 81);
+        assert_eq!(centers.row(0).to_vec(), vec![1, 1]);
+        assert_eq!(centers.row(8).to_vec(), vec![1, 25]); // last of first row
+        assert_eq!(centers.row(80).to_vec(), vec![25, 25]);
+        // 8-conn edge count for a 9x9 grid: 2*9*8 (H+V) + 2*8*8 (diagonals) = 272.
+        let edges = build_grid_edge_indices(&centers, 3, 8);
+        assert_eq!(edges.len(), 9 * 8 * 2 + 8 * 8 * 2);
+    }
+
+    #[test]
+    fn patchify_stride3_tiles_and_round_trips() {
+        // 9x9 image, ps=3, stride=3 -> centers {1,4,7}^2 = 9 agents that tile
+        // the image with NO overlap and NO gaps. Scattering each patch back to
+        // its covered pixels must reproduce the image exactly.
+        let (h, w, b, c) = (9usize, 9, 2, 1);
+        let images = Array4::<f32>::from_shape_fn((b, h, w, c), |(bi, y, x, _)| {
+            (bi * 100 + y * 9 + x) as f32
+        });
+        let centers = grid_agent_centers((h, w), 3, 3);
+        assert_eq!(centers.nrows(), 9);
+        let patches = patchify_batch(&images, &centers, 3);
+        assert_eq!(patches.dim(), (9, b, 3, 3, c));
+
+        // Scatter patches back; each pixel covered exactly once here.
+        let mut recon = Array4::<f32>::from_elem((b, h, w, c), f32::NAN);
+        for (a, row) in centers.rows().into_iter().enumerate() {
+            let (cy, cx) = (row[0], row[1]);
+            for py in 0..3i64 {
+                for px in 0..3i64 {
+                    let iy = cy + py - 1;
+                    let ix = cx + px - 1;
+                    if iy < 0 || ix < 0 || iy >= h as i64 || ix >= w as i64 {
+                        continue;
+                    }
+                    for bi in 0..b {
+                        recon[[bi, iy as usize, ix as usize, 0]] =
+                            patches[[a, bi, py as usize, px as usize, 0]];
+                    }
+                }
+            }
+        }
+        for (r, im) in recon.iter().zip(images.iter()) {
+            assert_eq!(r, im, "every pixel covered exactly once must round-trip");
+        }
+    }
+
+    #[test]
+    fn patchify_zero_pads_border_agents() {
+        // A single agent centered at (0,0) on a 3x3 image: its 3x3 patch's top
+        // and left rings fall outside and must be zero.
+        let images = Array4::<f32>::from_elem((1, 3, 3, 1), 5.0);
+        let centers = Array2::from_shape_vec((1, 2), vec![0i64, 0]).unwrap();
+        let patches = patchify_batch(&images, &centers, 3);
+        // patch (py,px): image coord (py-1, px-1). Row/col 0 are out of bounds.
+        for py in 0..3usize {
+            for px in 0..3usize {
+                let inside = py >= 1 && px >= 1; // image coords (>=0)
+                let want = if inside { 5.0 } else { 0.0 };
+                assert_eq!(patches[[0, 0, py, px, 0]], want, "py={py} px={px}");
             }
         }
     }

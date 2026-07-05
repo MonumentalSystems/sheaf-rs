@@ -112,6 +112,32 @@ impl LayerNorm {
     }
 }
 
+/// Pre-norm residual MLP block: `x + Dense2(GELU(Dense1(Norm(x))))`.
+/// Ports `layers.MLPBlock` (the residual mnist encoder trunk). A learned
+/// linear projection sits on the residual path when in/out widths differ
+/// (`residual_proj`); the shipped mnist block is width-preserving so it is
+/// `None`. `norm` is the block's pre-norm (RMSNorm for `norm_type="rmsnorm"`).
+#[derive(Debug, Clone)]
+pub struct MlpBlock {
+    pub norm: RmsNorm,                 // block/norm (rmsnorm)
+    pub dense1: Dense,                 // block/dense1
+    pub dense2: Dense,                 // block/dense2 -> out_dim
+    pub residual_proj: Option<Dense>,  // block/residual_proj (only when in != out)
+}
+
+impl MlpBlock {
+    pub fn forward(&self, x: &Array2<f32>) -> Array2<f32> {
+        let h = self.norm.forward(x);
+        let h = self.dense1.forward(&h).mapv(gelu_tanh);
+        let h = self.dense2.forward(&h);
+        let residual = match &self.residual_proj {
+            Some(p) => p.forward(x),
+            None => x.clone(),
+        };
+        residual + h
+    }
+}
+
 /// GELU, **tanh approximation** (the Flax default `jax.nn.gelu(approximate=True)`):
 /// `0.5 * x * (1 + tanh(sqrt(2/pi) * (x + 0.044715 x^3)))`.
 pub fn gelu_tanh(x: f32) -> f32 {
@@ -228,6 +254,55 @@ mod tests {
         // Identity above 20; clamp below 1e-7 stays finite.
         assert_eq!(inverse_softplus(25.0), 25.0);
         assert!(inverse_softplus(0.0).is_finite());
+    }
+
+    #[test]
+    fn mlp_block_is_prenorm_residual() {
+        // Width-preserving (in == out) block: no residual_proj, so the output
+        // is x + dense2(gelu(dense1(rmsnorm(x)))). Mirror the math by hand.
+        let d = 3usize;
+        let block = MlpBlock {
+            norm: RmsNorm::new(array![1.0, 1.1, 0.9]),
+            dense1: Dense::new(
+                Array2::from_shape_fn((d, d), |(i, j)| 0.1 * (i as f32 + 1.0) - 0.05 * j as f32),
+                array![0.01, -0.02, 0.03],
+            ),
+            dense2: Dense::new(
+                Array2::from_shape_fn((d, d), |(i, j)| 0.2 * i as f32 - 0.1 * j as f32),
+                array![-0.01, 0.02, 0.0],
+            ),
+            residual_proj: None,
+        };
+        let x = array![[0.5f32, -1.0, 2.0], [1.5, 0.2, -0.3]];
+        let got = block.forward(&x);
+        let h = block.norm.forward(&x);
+        let h = block.dense1.forward(&h).mapv(gelu_tanh);
+        let h = block.dense2.forward(&h);
+        let want = &x + &h;
+        for (g, w) in got.iter().zip(want.iter()) {
+            assert_abs_diff_eq!(g, w, epsilon = 1e-6);
+        }
+    }
+
+    #[test]
+    fn mlp_block_residual_proj_when_widths_differ() {
+        // in=2, out=3 -> residual path runs through residual_proj.
+        let block = MlpBlock {
+            norm: RmsNorm::new(array![1.0, 1.0]),
+            dense1: Dense::new(Array2::zeros((2, 3)), array![0.0, 0.0, 0.0]),
+            dense2: Dense::new(Array2::zeros((3, 3)), array![0.0, 0.0, 0.0]),
+            residual_proj: Some(Dense::new(
+                Array2::from_shape_fn((2, 3), |(i, j)| (i + j) as f32),
+                array![1.0, 2.0, 3.0],
+            )),
+        };
+        let x = array![[1.0f32, 1.0]];
+        // dense1/dense2 are zero -> h = gelu(0) then 0, so output == residual_proj(x).
+        let got = block.forward(&x);
+        let want = block.residual_proj.as_ref().unwrap().forward(&x);
+        for (g, w) in got.iter().zip(want.iter()) {
+            assert_abs_diff_eq!(g, w, epsilon = 1e-6);
+        }
     }
 
     #[test]

@@ -20,10 +20,16 @@ pub mod model;
 pub mod restriction_maps;
 
 pub use config::{ExportedConfig, ModelConfig};
-pub use decoder::{ConcatMlpDecoderV2, ConcatMlpDecoderV2Params};
-pub use encoder::{MlpEncoderV2, MlpEncoderV2Config, MlpEncoderV2Params};
-pub use model::{MazeForward, RmParams, SheafAdmmModel};
+pub use decoder::{
+    mnist_mean_softmax_predict, ClassificationDecoder, ClassificationDecoderParams,
+    ConcatMlpDecoderV2, ConcatMlpDecoderV2Params, ReadoutMode,
+};
+pub use encoder::{
+    MlpEncoder, MlpEncoderConfig, MlpEncoderParams, MlpEncoderV2, MlpEncoderV2Config,
+    MlpEncoderV2Params,
+};
+pub use model::{MazeForward, MnistForward, MnistSheafModel, RmParams, SheafAdmmModel};
 pub use restriction_maps::{
-    build_directional_restriction_maps, compute_direction_index, direction_names,
-    direction_slot_tables,
+    build_directional_restriction_maps, build_shared_restriction_maps, compute_direction_index,
+    direction_names, direction_slot_tables,
 };

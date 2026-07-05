@@ -21,17 +21,29 @@ use safetensors::tensor::TensorView;
 use safetensors::{Dtype, SafeTensors};
 
 use sheaf_nn::config::ExportedConfig;
-use sheaf_nn::decoder::{ConcatMlpDecoderV2, ConcatMlpDecoderV2Params};
-use sheaf_nn::encoder::{MlpEncoderV2, MlpEncoderV2Config, MlpEncoderV2Params};
-use sheaf_nn::layers::{Dense, LayerNorm, RmsNorm};
-use sheaf_nn::model::{RmParams, SheafAdmmModel};
+use sheaf_nn::decoder::{
+    ClassificationDecoder, ClassificationDecoderParams, ConcatMlpDecoderV2,
+    ConcatMlpDecoderV2Params, ReadoutMode,
+};
+use sheaf_nn::encoder::{
+    MlpEncoder, MlpEncoderConfig, MlpEncoderParams, MlpEncoderV2, MlpEncoderV2Config,
+    MlpEncoderV2Params,
+};
+use sheaf_nn::layers::{Dense, LayerNorm, MlpBlock, RmsNorm};
+use sheaf_nn::model::{MnistSheafModel, RmParams, SheafAdmmModel};
 use sheaf_nn::restriction_maps::direction_names;
 
 /// RMSNorm / LayerNorm epsilon (PLAN.md §3.4 numerics contract).
 const NORM_EPS: f32 = 1e-6;
 
 /// Pinned per-collection parameter count for the maze config (CONTRACT.md).
+/// Now cross-checked in tests (the loader derives the count from the manifest).
+#[allow(dead_code)]
 const MAZE_PARAM_COUNT: usize = 181_859;
+
+/// MNIST image channels (grayscale, normalized [0,1] — `data/build_mnist.py`
+/// reshapes to `[N, H, W, 1]`). The encoder input width is `ps*ps*C`.
+const MNIST_IMAGE_CHANNELS: usize = 1;
 
 /// Which parameter tree to read from the safetensors file.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -166,10 +178,14 @@ impl<'a> Tree<'a> {
                 "missing key {prefix}/{key} in safetensors (manifest violation)"
             );
         }
+        // Cross-check the materialized element count against the manifest
+        // (the maze count is additionally pinned against CONTRACT.md in tests).
         let count: usize = tensors.values().map(|(_, v)| v.len()).sum();
+        let expected_total: usize =
+            expected.values().map(|s| s.iter().product::<usize>()).sum();
         ensure!(
-            count == MAZE_PARAM_COUNT,
-            "collection {prefix:?}: {count} params, expected {MAZE_PARAM_COUNT}"
+            count == expected_total,
+            "collection {prefix:?}: {count} params, expected {expected_total}"
         );
         Ok(Tree { tensors, prefix })
     }
@@ -356,6 +372,167 @@ fn build_model(
         encoder,
         decoder,
         rm: RmParams { r_stack },
+        rho,
+    })
+}
+
+// ===========================================================================
+// MNIST loader (Phase B). Residual MLPEncoder, lasso, global sharing,
+// classification decoder. Flax module names mirror the maze layout.
+// ===========================================================================
+
+/// Exhaustive expected-key manifest for the mnist config. Flax module names are
+/// the reconstructed camera-ready layout (`MLPEncoder_0`, `block_0`,
+/// `ClassificationDecoder_0`, `rm/R_shared`). If a golden dump disagrees, this
+/// is the single place to reconcile the names against `manifest.json`.
+fn mnist_expected_keys(config: &ExportedConfig) -> BTreeMap<String, Vec<usize>> {
+    let m = &config.model;
+    let t = &config.task;
+    let in_feats = t.patch_size * t.patch_size * MNIST_IMAGE_CHANNELS; // 9
+    let enc_h = m.enc_hidden_dim; // 256
+    let lora_a_out = m.num_directions * m.d_e * m.lora_rank; // 8*24*8
+    let lora_b_out = m.num_directions * m.d_v * m.lora_rank; // 8*32*8
+
+    let mut keys: BTreeMap<String, Vec<usize>> = BTreeMap::new();
+    let dense = |name: &str, i: usize, o: usize, keys: &mut BTreeMap<String, Vec<usize>>| {
+        keys.insert(format!("{name}/kernel"), vec![i, o]);
+        keys.insert(format!("{name}/bias"), vec![o]);
+    };
+
+    // Encoder trunk: input_proj -> one width-preserving residual MLPBlock.
+    dense("MLPEncoder_0/input_proj", in_feats, enc_h, &mut keys);
+    keys.insert("MLPEncoder_0/block_0/norm/scale".into(), vec![enc_h]);
+    dense("MLPEncoder_0/block_0/dense1", enc_h, enc_h, &mut keys);
+    dense("MLPEncoder_0/block_0/dense2", enc_h, enc_h, &mut keys);
+    // comm_head + lasso objective heads (q_diag, q only — l1 is a config scalar).
+    dense("MLPEncoder_0/comm_head/comm_dense", enc_h, m.d_v, &mut keys);
+    keys.insert("MLPEncoder_0/comm_head/comm_norm/scale".into(), vec![m.d_v]);
+    keys.insert("MLPEncoder_0/comm_head/comm_norm/bias".into(), vec![m.d_v]);
+    for head in ["q_diag_dense", "q_dense"] {
+        dense(&format!("MLPEncoder_0/objective_heads/{head}"), enc_h, m.d_v, &mut keys);
+    }
+    keys.insert("MLPEncoder_0/lora_pre_ln/scale".into(), vec![enc_h]);
+    keys.insert("MLPEncoder_0/lora_pre_ln/bias".into(), vec![enc_h]);
+    dense("MLPEncoder_0/lora_A_dense", enc_h, lora_a_out, &mut keys);
+    dense("MLPEncoder_0/lora_B_dense", enc_h, lora_b_out, &mut keys);
+
+    // Decoder: bare linear classification head over x (readout_mode = x_only).
+    dense("ClassificationDecoder_0/cls_output", m.d_v, m.num_classes, &mut keys);
+
+    // One shared base restriction map + the raw (unbaked) rho scalar.
+    keys.insert("rm/R_shared".into(), vec![m.d_e, m.d_v]);
+    keys.insert("rho_raw".into(), vec![]);
+
+    keys
+}
+
+/// MNIST scope guards: this loader only understands the shipped mnist config.
+fn mnist_scope_guards(config: &ExportedConfig) -> anyhow::Result<()> {
+    let m = &config.model;
+    ensure!(m.encoder_arch == "mlp", "unsupported encoder_arch {:?}", m.encoder_arch);
+    ensure!(m.decoder_arch == "classification", "unsupported decoder_arch {:?}", m.decoder_arch);
+    ensure!(m.rm_sharing == "global", "unsupported rm_sharing {:?}", m.rm_sharing);
+    ensure!(m.objective_mode == "lasso", "unsupported objective_mode {:?}", m.objective_mode);
+    ensure!(config.task.task == "mnist", "unsupported task {:?}", config.task.task);
+    Ok(())
+}
+
+/// Load mnist `config.json` + `weights.safetensors` into a ready-to-run model.
+/// The default collection is EMA (paper eval convention).
+pub fn load_mnist_model(
+    config_path: &Path,
+    weights_path: &Path,
+    collection: WeightCollection,
+) -> anyhow::Result<MnistSheafModel> {
+    let config = load_config(config_path)?;
+    config.validate()?;
+    mnist_scope_guards(&config)?;
+
+    let bytes = std::fs::read(weights_path)
+        .with_context(|| format!("reading weights {}", weights_path.display()))?;
+    let st = SafeTensors::deserialize(&bytes)
+        .with_context(|| format!("parsing safetensors {}", weights_path.display()))?;
+
+    let expected = mnist_expected_keys(&config);
+    for prefix in ["params", "ema_params"] {
+        Tree::load(&st, prefix, &expected)?;
+    }
+    for (name, _) in st.iter() {
+        ensure!(
+            name.starts_with("params/") || name.starts_with("ema_params/"),
+            "unexpected top-level key {name:?} (want params/... or ema_params/...)"
+        );
+    }
+    build_mnist_model(config, &st, collection)
+}
+
+/// Materialize the requested collection into the typed mnist model.
+fn build_mnist_model(
+    config: ExportedConfig,
+    st: &SafeTensors,
+    collection: WeightCollection,
+) -> anyhow::Result<MnistSheafModel> {
+    let m = &config.model;
+    let expected = mnist_expected_keys(&config);
+    let mut tree = Tree::load(st, collection.prefix(), &expected)?;
+
+    // Residual trunk: input_proj + one width-preserving MLPBlock (no
+    // residual_proj since enc_hidden_dim in == out).
+    let block = MlpBlock {
+        norm: tree.rms_norm("MLPEncoder_0/block_0/norm"),
+        dense1: tree.dense("MLPEncoder_0/block_0/dense1"),
+        dense2: tree.dense("MLPEncoder_0/block_0/dense2"),
+        residual_proj: None,
+    };
+    let encoder = MlpEncoder {
+        params: MlpEncoderParams {
+            input_proj: tree.dense("MLPEncoder_0/input_proj"),
+            blocks: vec![block],
+            comm_dense: tree.dense("MLPEncoder_0/comm_head/comm_dense"),
+            comm_norm: tree.layer_norm("MLPEncoder_0/comm_head/comm_norm"),
+            q_diag_dense: tree.dense("MLPEncoder_0/objective_heads/q_diag_dense"),
+            q_dense: tree.dense("MLPEncoder_0/objective_heads/q_dense"),
+            lora_pre_ln: tree.layer_norm("MLPEncoder_0/lora_pre_ln"),
+            lora_a_dense: tree.dense("MLPEncoder_0/lora_A_dense"),
+            lora_b_dense: tree.dense("MLPEncoder_0/lora_B_dense"),
+        },
+        config: MlpEncoderConfig {
+            d_v: m.d_v,
+            d_e: m.d_e,
+            num_directions: m.num_directions,
+            lora_rank: m.lora_rank,
+            lora_alpha: m.lora_alpha,
+            q_epsilon: m.q_epsilon,
+            l1_weight: config.l1_weight(),
+        },
+    };
+
+    let readout_mode = match m.dec_readout_mode.as_deref() {
+        Some("x_only") => ReadoutMode::XOnly,
+        Some("concat") => ReadoutMode::Concat,
+        other => anyhow::bail!("unsupported dec_readout_mode {other:?} (x_only|concat)"),
+    };
+    let decoder = ClassificationDecoder {
+        params: ClassificationDecoderParams {
+            cls_output: tree.dense("ClassificationDecoder_0/cls_output"),
+        },
+        readout_mode,
+        num_classes: m.num_classes,
+    };
+
+    // The single shared base map R_shared [d_e, d_v].
+    let (_, data) = tree.take("rm/R_shared");
+    let rm_shared = Array2::from_shape_vec((m.d_e, m.d_v), data).expect("shape checked at load");
+
+    // rho_raw present but unused: inference reads the export-baked value.
+    let _ = tree.take("rho_raw");
+
+    let rho = config.baked.rho;
+    Ok(MnistSheafModel {
+        config,
+        encoder,
+        decoder,
+        rm_shared,
         rho,
     })
 }
@@ -580,5 +757,144 @@ mod tests {
         assert_eq!(expected.len(), 35, "35 arrays per collection (CONTRACT.md table)");
         let total: usize = expected.values().map(|s| s.iter().product::<usize>()).sum();
         assert_eq!(total, MAZE_PARAM_COUNT); // 181,859 (PLAN.md appendix)
+    }
+
+    // ---- mnist loader (Phase B) ----
+
+    // Dims shrunk from the shipped mnist config for a fast fixture; scope
+    // strings match `configs/experiment/mnist_sheaf.yaml`.
+    const MNIST_CONFIG_JSON: &str = r#"{
+      "model": {
+        "num_classes": 10, "d_v": 4, "d_e": 3,
+        "encoder_arch": "mlp", "enc_hidden_dim": 5, "comm_norm_type": "layernorm",
+        "objective_mode": "lasso", "l1_weight": 0.006337180166370117,
+        "x_solver": "diagonal_prox",
+        "z_solver": "unrolled_cg", "z_mode": "project",
+        "cg_iters": 5, "tikhonov_eps": 1e-5,
+        "rm_sharing": "global", "rm_init": "orthonormal", "rm_mode": "context",
+        "lora_rank": 2, "lora_alpha": 1.0, "lora_init_style": "legacy",
+        "num_directions": 8,
+        "relaxation_alpha": 1.0, "z_init": "h", "q_epsilon": 1e-4,
+        "decoder_arch": "classification", "dec_linear_head": true,
+        "dec_readout_mode": "x_only"
+      },
+      "task": {
+        "task": "mnist", "patch_size": 3, "stride": 3, "connectivity": 8,
+        "num_classes": 10, "k_eval": 100, "loss_window": 2
+      },
+      "baked": { "rho": 0.12 }
+    }"#;
+
+    fn write_mnist_fixture(dir: &Path) {
+        std::fs::create_dir_all(dir).unwrap();
+        std::fs::write(dir.join("config.json"), MNIST_CONFIG_JSON).unwrap();
+        let config = load_config(&dir.join("config.json")).unwrap();
+        let expected = mnist_expected_keys(&config);
+
+        let mut buffers: Vec<(String, Vec<usize>, Vec<f32>)> = Vec::new();
+        for prefix in ["params", "ema_params"] {
+            for (i, (suffix, shape)) in expected.iter().enumerate() {
+                let full = format!("{prefix}/{suffix}");
+                let len: usize = shape.iter().product();
+                let seed = i + if prefix == "ema_params" { 1000 } else { 0 };
+                buffers.push((full, shape.clone(), fill(seed, len)));
+            }
+        }
+        let bytes: Vec<(String, Vec<usize>, Vec<u8>)> = buffers
+            .into_iter()
+            .map(|(name, shape, data)| {
+                let raw: Vec<u8> = data.iter().flat_map(|v| v.to_le_bytes()).collect();
+                (name, shape, raw)
+            })
+            .collect();
+        let views: HashMap<&str, TensorView> = bytes
+            .iter()
+            .map(|(name, shape, raw)| {
+                (name.as_str(), TensorView::new(Dtype::F32, shape.clone(), raw).unwrap())
+            })
+            .collect();
+        std::fs::write(
+            dir.join("weights.safetensors"),
+            safetensors::serialize(&views, &None).unwrap(),
+        )
+        .unwrap();
+    }
+
+    #[test]
+    fn loads_mnist_typed_structs() {
+        let dir = temp_dir("mnist_ok");
+        write_mnist_fixture(&dir);
+        let model = load_mnist_model(
+            &dir.join("config.json"),
+            &dir.join("weights.safetensors"),
+            WeightCollection::default(), // EMA
+        )
+        .unwrap();
+
+        // Encoder: residual trunk (in = 3*3*1 = 9), lasso heads (q_diag, q).
+        let p = &model.encoder.params;
+        assert_eq!(p.input_proj.kernel.dim(), (9, 5));
+        assert_eq!(p.blocks.len(), 1);
+        assert_eq!(p.blocks[0].dense1.kernel.dim(), (5, 5));
+        assert_eq!(p.blocks[0].dense2.kernel.dim(), (5, 5));
+        assert!(p.blocks[0].residual_proj.is_none());
+        assert_eq!(p.comm_dense.kernel.dim(), (5, 4)); // hidden -> d_v
+        assert_eq!(p.q_diag_dense.kernel.dim(), (5, 4));
+        assert_eq!(p.lora_a_dense.kernel.dim(), (5, 8 * 3 * 2)); // K*d_e*r
+        assert_eq!(p.lora_b_dense.kernel.dim(), (5, 8 * 4 * 2)); // K*d_v*r
+        assert_eq!(model.encoder.config.l1_weight, 0.006337180166370117);
+
+        // Decoder: bare linear head [d_v, num_classes], x_only readout.
+        assert_eq!(model.decoder.params.cls_output.kernel.dim(), (4, 10));
+        assert_eq!(model.decoder.readout_mode, ReadoutMode::XOnly);
+        assert_eq!(model.decoder.num_classes, 10);
+
+        // One shared base map + baked rho.
+        assert_eq!(model.rm_shared.dim(), (3, 4)); // [d_e, d_v]
+        assert_eq!(model.rho, 0.12);
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn mnist_loader_runs_a_forward_and_predicts() {
+        use ndarray::Array4;
+        use sheaf_core::graph::AgentGraph;
+        use std::sync::Arc;
+
+        let dir = temp_dir("mnist_fwd");
+        write_mnist_fixture(&dir);
+        let model = load_mnist_model(
+            &dir.join("config.json"),
+            &dir.join("weights.safetensors"),
+            WeightCollection::Ema,
+        )
+        .unwrap();
+
+        // Tiny 6x6 image so the grid is small (stride 3 -> centers {1,4} -> 4
+        // agents), B=2, C=1. Full end-to-end: patchify -> graph -> ADMM ->
+        // classify -> mean-softmax prediction.
+        let (h, w, b) = (6usize, 6, 2);
+        let images = Array4::<f32>::from_shape_fn((b, h, w, 1), |(bi, y, x, _)| {
+            ((bi + y * 6 + x) % 5) as f32 * 0.1
+        });
+        let centers = crate::views::grid_agent_centers((h, w), 3, 3);
+        assert_eq!(centers.nrows(), 4);
+        let edges = crate::views::build_grid_edge_indices(&centers, 3, 8);
+        let patches = crate::views::patchify_batch(&images, &centers, 3);
+        let positions = centers.mapv(|v| v as f32);
+        let graph = Arc::new(AgentGraph::new_grid(edges, positions, model.config.model.num_directions));
+
+        let fwd = model.forward(&patches, graph, 6);
+        // logits per iter [K, N, B, C]; final [N, B, C]; prediction [B].
+        assert_eq!(fwd.logits_per_iter.dim(), (6, 4, b, 10));
+        let logits_final = fwd.logits_final();
+        assert_eq!(logits_final.dim(), (4, b, 10));
+        assert!(logits_final.iter().all(|v| v.is_finite()));
+        let pred = fwd.prediction();
+        assert_eq!(pred.len(), b);
+        assert!(pred.iter().all(|&c| (0..10).contains(&c)));
+
+        std::fs::remove_dir_all(&dir).ok();
     }
 }

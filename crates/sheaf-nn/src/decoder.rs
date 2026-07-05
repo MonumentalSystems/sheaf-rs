@@ -69,6 +69,116 @@ impl ConcatMlpDecoderV2 {
     }
 }
 
+// ===========================================================================
+// ClassificationDecoder (`arch = "classification"`, the MNIST head).
+// ===========================================================================
+
+/// Per-agent readout: which input the classification head reads.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ReadoutMode {
+    /// The final agent state `x` alone (the shipped MNIST path).
+    XOnly,
+    /// `concat([x, flatten(patch)])`.
+    Concat,
+}
+
+/// Per-agent classification head (`arch = "classification"`). The shipped MNIST
+/// config is a bare `Dense(num_classes)` (`linear_head = true`) over `x`
+/// (`readout_mode = "x_only"`), producing per-agent logits `[N, B, num_classes]`
+/// with NO spatial patch grid (unlike [`ConcatMlpDecoderV2`]). The prediction
+/// is the argmax of the MEAN of per-agent softmax over the N agents (see
+/// `mnist_mean_softmax_predict`).
+#[derive(Debug, Clone)]
+pub struct ClassificationDecoderParams {
+    /// `cls_output`: Dense(num_classes) — `[readout_dim, num_classes]`.
+    pub cls_output: Dense,
+}
+
+pub struct ClassificationDecoder {
+    pub params: ClassificationDecoderParams,
+    pub readout_mode: ReadoutMode,
+    /// Number of output classes (= `cls_output` out-dim).
+    pub num_classes: usize,
+}
+
+impl ClassificationDecoder {
+    /// Decode one agent-state slab `x [N, B, d_v]` (+ `patches` for `Concat`)
+    /// -> per-agent logits `[N, B, num_classes]`. Shared across agents via the
+    /// `[N*B, ...]` flatten contract (only `linear_head = true` is shipped).
+    pub fn forward(&self, x: &Array3<f32>, patches: &Array5<f32>) -> Array3<f32> {
+        let (n, b, d_v) = x.dim();
+        let nb = n * b;
+        let x_flat: Array2<f32> = x
+            .as_standard_layout()
+            .into_owned()
+            .into_shape_with_order((nb, d_v))
+            .expect("classification: x flatten");
+
+        let readout = match self.readout_mode {
+            ReadoutMode::XOnly => x_flat,
+            ReadoutMode::Concat => {
+                let (np, bp, ph, pw, ch) = patches.dim();
+                assert_eq!((n, b), (np, bp), "classification: x/patches agent-batch mismatch");
+                let patch_flat: Array2<f32> = patches
+                    .as_standard_layout()
+                    .into_owned()
+                    .into_shape_with_order((nb, ph * pw * ch))
+                    .expect("classification: patch flatten");
+                // concat order is [x, patch] (decoder.py ClassificationDecoder).
+                concatenate(Axis(1), &[x_flat.view(), patch_flat.view()])
+                    .expect("classification: concat")
+            }
+        };
+
+        let logits = self.params.cls_output.forward(&readout);
+        assert_eq!(logits.shape()[1], self.num_classes, "classification: cls_output width");
+        logits
+            .into_shape_with_order((n, b, self.num_classes))
+            .expect("classification: output reshape")
+    }
+}
+
+/// MNIST prediction (PLAN §5.2 EVAL QUIRK): argmax of the MEAN of per-agent
+/// softmax over the N agents — NOT the mean of logits. `logits_final` is the
+/// final-iterate per-agent logits `[N, B, num_classes]`; returns `[B]` labels.
+pub fn mnist_mean_softmax_predict(logits_final: &Array3<f32>) -> ndarray::Array1<i64> {
+    let (n, b, c) = logits_final.dim();
+    let mut pred = ndarray::Array1::<i64>::zeros(b);
+    for bi in 0..b {
+        // Accumulate mean_n softmax(logits[n, bi, :]) over agents.
+        let mut agg = vec![0.0f32; c];
+        for ni in 0..n {
+            // Numerically stable softmax over the class axis.
+            let mut max = f32::NEG_INFINITY;
+            for ci in 0..c {
+                max = max.max(logits_final[[ni, bi, ci]]);
+            }
+            let mut denom = 0.0f32;
+            let mut exps = vec![0.0f32; c];
+            for ci in 0..c {
+                let e = (logits_final[[ni, bi, ci]] - max).exp();
+                exps[ci] = e;
+                denom += e;
+            }
+            for (agg_c, &e) in agg.iter_mut().zip(exps.iter()) {
+                *agg_c += e / denom;
+            }
+        }
+        // argmax of the aggregated probabilities (mean over N is monotone in
+        // the sum, so dividing by N is unnecessary for the argmax; kept exact
+        // to np.argmax first-max tie-break).
+        let (mut arg, mut best) = (0usize, f32::NEG_INFINITY);
+        for (ci, &val) in agg.iter().enumerate() {
+            if val > best {
+                best = val;
+                arg = ci;
+            }
+        }
+        pred[bi] = arg as i64;
+    }
+    pred
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -225,5 +335,74 @@ mod tests {
         // RMS norm is identical for both inputs, so the sign flip of x[0]
         // flips the hidden pre-activation's sign -> different outputs.
         assert!(out_pos[[0, 0, 0, 0, 0]] > out_neg[[0, 0, 0, 0, 0]]);
+    }
+
+    // ---- ClassificationDecoder (mnist) ----
+
+    #[test]
+    fn classification_x_only_is_linear_over_x() {
+        // readout = x, logits = x @ W + b, reshaped to [N, B, num_classes].
+        let (d_v, num_classes) = (3usize, 4usize);
+        let kernel = Array2::from_shape_fn((d_v, num_classes), |(i, j)| 0.1 * i as f32 - 0.05 * j as f32);
+        let bias = Array1::from_shape_fn(num_classes, |j| 0.2 * j as f32);
+        let dec = ClassificationDecoder {
+            params: ClassificationDecoderParams {
+                cls_output: Dense::new(kernel.clone(), bias.clone()),
+            },
+            readout_mode: ReadoutMode::XOnly,
+            num_classes,
+        };
+        let (n, b) = (3, 2);
+        let x = Array3::from_shape_fn((n, b, d_v), |(i, j, d)| 0.3 * i as f32 - 0.2 * j as f32 + 0.5 * d as f32);
+        let patches = Array5::<f32>::zeros((n, b, 1, 1, 1)); // ignored by x_only
+        let logits = dec.forward(&x, &patches);
+        assert_eq!(logits.shape(), &[n, b, num_classes]);
+        for i in 0..n {
+            for j in 0..b {
+                for cc in 0..num_classes {
+                    let mut s = bias[cc];
+                    for d in 0..d_v {
+                        s += x[[i, j, d]] * kernel[[d, cc]];
+                    }
+                    assert_abs_diff_eq!(logits[[i, j, cc]], s, epsilon = 1e-6);
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn mean_softmax_predict_matches_manual_and_flips_from_logit_mean() {
+        // A crisp disagreement between mean-of-logits and mean-of-softmax.
+        // agent 0: [0, 0.5] mild class 1; agent 1: [6, 0] saturated class 0.
+        // mean-of-logits = [3.0, 0.25] -> argmax 0.
+        // softmax: agent0 [0.3775, 0.6225]; agent1 [0.9975, 0.0025].
+        // mean-softmax sum = [1.3750, 0.6250] -> argmax 0. (agree)
+        // Flip: use TWO mild class-1 agents vs one saturated class-0 agent, but
+        // make the saturated one only moderate so softmax mass stays split.
+        let logits = Array3::from_shape_vec((3, 1, 2), vec![
+            0.0f32, 1.2, // softmax ~ [0.2315, 0.7685]
+            0.0, 1.2,    // softmax ~ [0.2315, 0.7685]
+            2.5, 0.0,    // softmax ~ [0.9241, 0.0759]
+        ])
+        .unwrap();
+        // mean-of-logits = [2.5/3, 2.4/3] = [0.8333, 0.8000] -> argmax 0.
+        // mean-of-softmax sum = [1.3871, 1.6129] -> argmax 1. DISAGREE.
+        let pred = mnist_mean_softmax_predict(&logits);
+        assert_eq!(pred[0], 1, "prediction must follow the mean of per-agent softmax");
+
+        // Cross-check against a hand-rolled mean-softmax argmax.
+        let (n, b, c) = logits.dim();
+        let mut agg = vec![0.0f64; c];
+        for ni in 0..n {
+            let mx = (0..c).map(|ci| logits[[ni, 0, ci]] as f64).fold(f64::NEG_INFINITY, f64::max);
+            let exps: Vec<f64> = (0..c).map(|ci| ((logits[[ni, 0, ci]] as f64) - mx).exp()).collect();
+            let denom: f64 = exps.iter().sum();
+            for (agg_c, &e) in agg.iter_mut().zip(exps.iter()) {
+                *agg_c += e / denom;
+            }
+        }
+        let manual = (0..c).max_by(|&i, &j| agg[i].partial_cmp(&agg[j]).unwrap()).unwrap();
+        assert_eq!(pred[0] as usize, manual);
+        let _ = b;
     }
 }

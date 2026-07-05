@@ -23,7 +23,7 @@ use ndarray::{Array2, Array3, Array5};
 
 use sheaf_core::solvers::{EncoderOutput, LoraFactors, Objective};
 
-use crate::layers::{gelu_tanh, softplus, Dense, LayerNorm, RmsNorm};
+use crate::layers::{gelu_tanh, softplus, Dense, LayerNorm, MlpBlock, RmsNorm};
 
 /// Weights of the maze encoder (loaded by sheaf-io from safetensors; key map
 /// in goldens/CONTRACT.md under `MLPEncoderV2_0/...`).
@@ -131,6 +131,110 @@ impl MlpEncoderV2 {
                 q: unflatten_nb(q, n, b),
                 l1: unflatten_nb(l1, n, b),
                 upper: unflatten_nb(upper, n, b),
+            },
+            lora: Some(LoraFactors {
+                a,
+                b: bf,
+                gate: None, // lora_use_gate = false in every shipped config
+                lora_alpha: c.lora_alpha,
+            }),
+        }
+    }
+}
+
+// ===========================================================================
+// MLPEncoder (`arch = "mlp"`, the residual MNIST encoder).
+// ===========================================================================
+
+/// Weights of the residual mnist encoder (`arch = "mlp"`). Trunk is
+/// `flatten -> Dense(input_proj) -> MLPBlock x len(hidden_dims)` (mnist ships a
+/// single block) `-> comm_head`. Differs from [`MlpEncoderV2`] which is a
+/// single `RMSNorm -> Dense -> GELU` trunk with no residual block. The
+/// objective heads are the `lasso` subset (`q_diag`, `q`; the L1 weight is a
+/// config scalar, not a head), and the LoRA heads read `LayerNorm(lora_pre_ln)`
+/// of the block output — identical layout to the maze encoder.
+#[derive(Debug, Clone)]
+pub struct MlpEncoderParams {
+    pub input_proj: Dense,        // input_proj [in, hidden]
+    pub blocks: Vec<MlpBlock>,    // block_0 .. (mnist: one width-preserving block)
+    pub comm_dense: Dense,        // comm_head/comm_dense
+    pub comm_norm: LayerNorm,     // comm_head/comm_norm
+    pub q_diag_dense: Dense,      // objective_heads/q_diag_dense
+    pub q_dense: Dense,           // objective_heads/q_dense
+    pub lora_pre_ln: LayerNorm,   // lora_pre_ln
+    pub lora_a_dense: Dense,      // lora_A_dense [hidden, K*d_e*r]
+    pub lora_b_dense: Dense,      // lora_B_dense [hidden, K*d_v*r]
+}
+
+/// Config the residual encoder needs at run time. `l1_weight` is the `lasso`
+/// scalar (from the model config, NOT learned).
+#[derive(Debug, Clone, Copy)]
+pub struct MlpEncoderConfig {
+    pub d_v: usize,            // 32
+    pub d_e: usize,            // 24
+    pub num_directions: usize, // K = 8
+    pub lora_rank: usize,      // 8
+    pub lora_alpha: f32,       // 1.0
+    pub q_epsilon: f32,        // 1e-4
+    pub l1_weight: f32,        // scalar lasso weight (config)
+}
+
+pub struct MlpEncoder {
+    pub params: MlpEncoderParams,
+    pub config: MlpEncoderConfig,
+}
+
+impl MlpEncoder {
+    /// Encode patches `[N, B, ph, pw, C]` -> `EncoderOutput` with `h [N,B,d_v]`,
+    /// `Objective::Lasso { q_diag, q, l1 }`, and directional `LoraFactors`.
+    ///
+    /// Flatten to `[N*B, ph*pw*C]`, apply once (encoder shared across agents),
+    /// reshape every `[N*B, ...]` output back to `[N, B, ...]`.
+    pub fn forward(&self, patches: &Array5<f32>) -> EncoderOutput {
+        let c = &self.config;
+        let (n, b, ph, pw, ch) = patches.dim();
+        let nb = n * b;
+        let flat = flatten_leading2(patches, nb, ph * pw * ch);
+
+        // Trunk: Dense(input_proj) -> residual MLPBlock(s). (No input RMSNorm,
+        // unlike mlp_v2; the first learned map is input_proj.)
+        let mut feats = self.params.input_proj.forward(&flat);
+        for block in &self.params.blocks {
+            feats = block.forward(&feats);
+        }
+
+        // comm_head: Dense(d_v) -> LayerNorm (comm_norm_type = "layernorm").
+        let h = self.params.comm_norm.forward(&self.params.comm_dense.forward(&feats));
+
+        // Objective heads (lasso) read the trunk `feats`, not h.
+        let q_eps = c.q_epsilon;
+        let q_diag = self
+            .params
+            .q_diag_dense
+            .forward(&feats)
+            .mapv(|v| softplus(v) + q_eps);
+        let q = self.params.q_dense.forward(&feats);
+
+        // LoRA heads read LayerNorm(lora_pre_ln)(trunk feats).
+        let feats_ln = self.params.lora_pre_ln.forward(&feats);
+        let a_flat = self.params.lora_a_dense.forward(&feats_ln);
+        let b_flat = self.params.lora_b_dense.forward(&feats_ln);
+        let (k, d_e, d_v, r) = (c.num_directions, c.d_e, c.d_v, c.lora_rank);
+        assert_eq!(a_flat.shape()[1], k * d_e * r, "lora_A_dense out dim");
+        assert_eq!(b_flat.shape()[1], k * d_v * r, "lora_B_dense out dim");
+        let a = a_flat
+            .into_shape_with_order((n, b, k, d_e, r))
+            .expect("lora A reshape");
+        let bf = b_flat
+            .into_shape_with_order((n, b, k, d_v, r))
+            .expect("lora B reshape");
+
+        EncoderOutput {
+            h: unflatten_nb(h, n, b),
+            objective: Objective::Lasso {
+                q_diag: unflatten_nb(q_diag, n, b),
+                q: unflatten_nb(q, n, b),
+                l1: c.l1_weight, // scalar lasso weight (config, broadcast in the solver)
             },
             lora: Some(LoraFactors {
                 a,
@@ -387,6 +491,109 @@ mod tests {
             ],
             "B",
         );
+    }
+
+    // ---- MLPEncoder (residual, mnist) ----
+
+    /// Tiny residual encoder: patch (1,1,1) -> in=1, hidden=4, d_v=3, d_e=2,
+    /// K=4 directions, rank=1, one width-preserving block.
+    fn tiny_mlp_encoder(seed: u64) -> MlpEncoder {
+        let mut g = Lcg(seed);
+        let (input, hidden, d_v, d_e, k, r) = (1usize, 4usize, 3usize, 2usize, 4usize, 1usize);
+        let dense = |g: &mut Lcg, i: usize, o: usize| Dense::new(g.mat(i, o), g.vec(o));
+        let block = MlpBlock {
+            norm: RmsNorm::new(Array1::ones(hidden)),
+            dense1: dense(&mut g, hidden, hidden),
+            dense2: dense(&mut g, hidden, hidden),
+            residual_proj: None, // width-preserving
+        };
+        MlpEncoder {
+            params: MlpEncoderParams {
+                input_proj: dense(&mut g, input, hidden),
+                blocks: vec![block],
+                comm_dense: dense(&mut g, hidden, d_v),
+                comm_norm: LayerNorm::new(Array1::ones(d_v), Array1::zeros(d_v)),
+                q_diag_dense: dense(&mut g, hidden, d_v),
+                q_dense: dense(&mut g, hidden, d_v),
+                lora_pre_ln: LayerNorm::new(Array1::ones(hidden), Array1::zeros(hidden)),
+                lora_a_dense: dense(&mut g, hidden, k * d_e * r),
+                lora_b_dense: dense(&mut g, hidden, k * d_v * r),
+            },
+            config: MlpEncoderConfig {
+                d_v,
+                d_e,
+                num_directions: k,
+                lora_rank: r,
+                lora_alpha: 1.0,
+                q_epsilon: 1e-4,
+                l1_weight: 0.006337180166370117,
+            },
+        }
+    }
+
+    fn tiny_mlp_patches(n: usize, b: usize) -> Array5<f32> {
+        Array5::from_shape_fn((n, b, 1, 1, 1), |(i, j, _, _, _)| {
+            0.3 + i as f32 * 0.7 - j as f32 * 0.4
+        })
+    }
+
+    #[test]
+    fn mlp_encoder_output_shapes_and_lasso() {
+        let enc = tiny_mlp_encoder(101);
+        let out = enc.forward(&tiny_mlp_patches(5, 2));
+        assert_eq!(out.h.shape(), &[5, 2, 3]);
+        match &out.objective {
+            Objective::Lasso { q_diag, q, l1 } => {
+                assert_eq!(q_diag.shape(), &[5, 2, 3]);
+                assert_eq!(q.shape(), &[5, 2, 3]);
+                assert!(q_diag.iter().all(|&v| v >= 1e-4), "q_diag floored at q_epsilon");
+                // scalar lasso weight is passed through unchanged.
+                assert_abs_diff_eq!(*l1, 0.006337180166370117, epsilon = 0.0);
+            }
+            _ => panic!("mnist encoder must emit Objective::Lasso"),
+        }
+        let lora = out.lora.expect("rm_mode=context emits LoRA factors");
+        assert_eq!(lora.a.shape(), &[5, 2, 4, 2, 1]); // [N,B,K,d_e,r]
+        assert_eq!(lora.b.shape(), &[5, 2, 4, 3, 1]); // [N,B,K,d_v,r]
+        assert!(lora.gate.is_none());
+    }
+
+    #[test]
+    fn mlp_encoder_shared_across_agents() {
+        // Whole [N, B, ...] batch must equal per-agent [1, B, ...] application.
+        let enc = tiny_mlp_encoder(202);
+        let n = 4;
+        let patches = tiny_mlp_patches(n, 3);
+        let full = enc.forward(&patches);
+        for i in 0..n {
+            let slab = patches.index_axis(Axis(0), i).to_owned().insert_axis(Axis(0));
+            let single = enc.forward(&slab);
+            for (a, b) in full
+                .h
+                .index_axis(Axis(0), i)
+                .iter()
+                .zip(single.h.index_axis(Axis(0), 0).iter())
+            {
+                assert_abs_diff_eq!(a, b, epsilon = 1e-6);
+            }
+        }
+    }
+
+    #[test]
+    fn mlp_encoder_trunk_is_residual_block() {
+        // Reproduce the trunk by hand: input_proj then the residual block.
+        let enc = tiny_mlp_encoder(303);
+        let patches = tiny_mlp_patches(2, 1);
+        let flat = Array2::from_shape_fn((2, 1), |(i, _)| 0.3 + i as f32 * 0.7);
+        let mut feats = enc.params.input_proj.forward(&flat);
+        for block in &enc.params.blocks {
+            feats = block.forward(&feats);
+        }
+        let h_ref = enc.params.comm_norm.forward(&enc.params.comm_dense.forward(&feats));
+        let out = enc.forward(&patches);
+        for (g, w) in out.h.iter().zip(h_ref.iter()) {
+            assert_abs_diff_eq!(g, w, epsilon = 1e-6);
+        }
     }
 
     #[test]

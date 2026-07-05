@@ -7,7 +7,7 @@
 
 use std::sync::Arc;
 
-use ndarray::{Array3, Array4, Array5, Array6, Axis};
+use ndarray::{Array1, Array2, Array3, Array4, Array5, Array6, Axis};
 
 use sheaf_core::admm::{run_admm, run_admm_history, AdmmHistory, AdmmParams, AdmmState, XSolverKind};
 use sheaf_core::geometry::{FixedGeometry, LoraGeometry, SheafGeometry};
@@ -16,9 +16,9 @@ use sheaf_core::solvers::{EncoderOutput, UnrolledCgParams, ZMode};
 use sheaf_core::tensor::{NodeState, RestrictionMaps};
 
 use crate::config::ExportedConfig;
-use crate::decoder::ConcatMlpDecoderV2;
-use crate::encoder::MlpEncoderV2;
-use crate::restriction_maps::build_directional_restriction_maps;
+use crate::decoder::{mnist_mean_softmax_predict, ClassificationDecoder, ConcatMlpDecoderV2};
+use crate::encoder::{MlpEncoder, MlpEncoderV2};
+use crate::restriction_maps::{build_directional_restriction_maps, build_shared_restriction_maps};
 
 /// Learned base restriction maps, stacked `[K, d_e, d_v]` in
 /// `direction_names` order (safetensors keys `rm/R_N`, `rm/R_NE`, ...).
@@ -206,6 +206,195 @@ impl SheafAdmmModel {
         let (k, n, b, _d_v) = xs.dim();
         let (oh, ow, oc) = self.decoder.output_shape;
         let mut out = Array6::zeros((k, n, b, oh, ow, oc));
+        for i in 0..k {
+            let x_i = xs.index_axis(Axis(0), i).to_owned();
+            let logits = self.decoder.forward(&x_i, patches);
+            out.index_axis_mut(Axis(0), i).assign(&logits);
+        }
+        out
+    }
+}
+
+// ===========================================================================
+// MNIST Sheaf-ADMM model (residual MLPEncoder -> global geometry -> project-mode
+// ADMM -> classification decoder -> mean-of-per-agent-softmax prediction).
+// ===========================================================================
+
+/// The full MNIST Sheaf-ADMM model (weights + baked scalars + config).
+/// Differs from the maze model in: residual [`MlpEncoder`] (lasso objective),
+/// ONE shared restriction map (`rm_sharing = "global"`), hard-consensus
+/// `project`-mode CG, and a linear [`ClassificationDecoder`] read from `x`.
+pub struct MnistSheafModel {
+    pub config: ExportedConfig,
+    pub encoder: MlpEncoder,
+    pub decoder: ClassificationDecoder,
+    /// The single shared base restriction map `R_shared [d_e, d_v]`.
+    pub rm_shared: Array2<f32>,
+    /// Export-baked learned penalty (config.baked.rho).
+    pub rho: f32,
+}
+
+/// Everything one MNIST forward pass exposes (parity + prediction).
+pub struct MnistForward {
+    pub history: AdmmHistory,
+    /// Decoded per-iteration per-agent logits `[K, N, B, num_classes]`.
+    pub logits_per_iter: Array4<f32>,
+    pub final_state: AdmmState,
+    /// The assembled shared base maps `[E, 2, d_e, d_v]` (golden cross-check).
+    pub base_restriction_maps: RestrictionMaps,
+}
+
+impl MnistForward {
+    /// Final-iterate per-agent logits `[N, B, num_classes]` (`logits_per_iter[K-1]`).
+    pub fn logits_final(&self) -> Array3<f32> {
+        let k = self.logits_per_iter.shape()[0];
+        assert!(k > 0, "empty history");
+        self.logits_per_iter.index_axis(Axis(0), k - 1).to_owned()
+    }
+
+    /// MNIST prediction `[B]` (PLAN §5.2): argmax of the MEAN of per-agent
+    /// softmax over the N agents on the final-iterate logits.
+    pub fn prediction(&self) -> Array1<i64> {
+        mnist_mean_softmax_predict(&self.logits_final())
+    }
+}
+
+impl MnistSheafModel {
+    /// Mirrors `SheafAdmmModel::setup_admm` for the mnist scope: encode, build
+    /// the shared base maps, assemble the (LoRA context / fixed) geometry, pick
+    /// `z_init`, and bake the project-mode solver params.
+    #[allow(clippy::type_complexity)]
+    fn setup_admm(
+        &self,
+        patches: &Array5<f32>,
+        graph: &Arc<AgentGraph>,
+        num_iters: usize,
+    ) -> (
+        EncoderOutput,
+        Box<dyn SheafGeometry>,
+        RestrictionMaps,
+        UnrolledCgParams,
+        AdmmParams,
+        XSolverKind,
+        NodeState,
+    ) {
+        let m = &self.config.model;
+        assert_eq!(patches.shape()[0], graph.num_nodes, "patches N != graph N");
+
+        let enc_out = self.encoder.forward(patches);
+        // Global sharing: one base map broadcast onto every edge / endpoint.
+        let base = build_shared_restriction_maps(&self.rm_shared, graph.num_edges());
+
+        let geometry: Box<dyn SheafGeometry> = match m.rm_mode.as_str() {
+            "context" => {
+                let lora = enc_out
+                    .lora
+                    .as_ref()
+                    .expect("rm_mode=context requires encoder LoRA factors");
+                // LoRA slots stay direction-indexed even under global sharing
+                // (create_lora_geometry selects by grid direction).
+                Box::new(LoraGeometry::create_directional(
+                    graph.clone(),
+                    base.clone(),
+                    &lora.a,
+                    &lora.b,
+                    lora.gate.as_ref(),
+                    lora.lora_alpha,
+                ))
+            }
+            "fixed" => Box::new(FixedGeometry::new(graph.clone(), base.clone())),
+            other => panic!("unknown rm_mode {other:?} (fixed|context)"),
+        };
+
+        let z_init = if m.z_init == "h" {
+            enc_out.h.clone()
+        } else {
+            NodeState::zeros(enc_out.h.raw_dim())
+        };
+
+        let z_params = UnrolledCgParams {
+            mode: match m.z_mode.as_str() {
+                "project" => ZMode::Project,
+                "prox" => ZMode::Prox,
+                other => panic!("unknown z_mode {other:?} (prox|project)"),
+            },
+            gamma: m.gamma, // unused by project mode; carried for AdmmParams agreement
+            num_iters: m.cg_iters,
+            tikhonov_eps: m.tikhonov_eps,
+        };
+        let admm_params = AdmmParams {
+            rho: self.rho,
+            alpha: m.relaxation_alpha,
+            gamma: m.gamma,
+            k: num_iters,
+        };
+        let x_solver = match m.x_solver.as_str() {
+            "diagonal_prox" => XSolverKind::DiagonalProx,
+            "simple" => XSolverKind::Simple,
+            other => panic!("unknown x_solver {other:?} (diagonal_prox|simple)"),
+        };
+        (enc_out, geometry, base, z_params, admm_params, x_solver, z_init)
+    }
+
+    /// Full forward with per-iteration history (mirrors `coordinate_history`),
+    /// decoding every `x^k` through the classification head.
+    /// `patches: [N, B, ph, pw, C]`; graph built per call.
+    pub fn forward(
+        &self,
+        patches: &Array5<f32>,
+        graph: Arc<AgentGraph>,
+        num_iters: usize,
+    ) -> MnistForward {
+        let (enc_out, geometry, base, z_params, admm_params, x_solver, z_init) =
+            self.setup_admm(patches, &graph, num_iters);
+        let (final_state, history) = run_admm_history(
+            &enc_out,
+            geometry.as_ref(),
+            x_solver,
+            &z_params,
+            &admm_params,
+            &z_init,
+        );
+        let logits_per_iter = self.decode_x_iterates(&history.x, patches);
+        MnistForward {
+            history,
+            logits_per_iter,
+            final_state,
+            base_restriction_maps: base,
+        }
+    }
+
+    /// Training-style forward (mirrors `__call__`): run `num_iters` ADMM steps
+    /// and decode only the last `loss_window` x-iterates -> `[W, N, B, C]`.
+    pub fn forward_window(
+        &self,
+        patches: &Array5<f32>,
+        graph: Arc<AgentGraph>,
+        num_iters: usize,
+        loss_window: usize,
+    ) -> (AdmmState, Array4<f32>) {
+        let (enc_out, geometry, _base, z_params, admm_params, x_solver, z_init) =
+            self.setup_admm(patches, &graph, num_iters);
+        let (final_state, x_window) = run_admm(
+            &enc_out,
+            geometry.as_ref(),
+            x_solver,
+            &z_params,
+            &admm_params,
+            &z_init,
+            loss_window,
+        );
+        let stacked = stack_states(&x_window);
+        let logits = self.decode_x_iterates(&stacked, patches);
+        (final_state, logits)
+    }
+
+    /// Decode a stack of x-iterates `[K, N, B, d_v]` through the classification
+    /// head -> per-agent logits `[K, N, B, num_classes]` (no spatial grid).
+    pub fn decode_x_iterates(&self, xs: &Array4<f32>, patches: &Array5<f32>) -> Array4<f32> {
+        let (k, n, b, _d_v) = xs.dim();
+        let c = self.decoder.num_classes;
+        let mut out = Array4::zeros((k, n, b, c));
         for i in 0..k {
             let x_i = xs.index_axis(Axis(0), i).to_owned();
             let logits = self.decoder.forward(&x_i, patches);

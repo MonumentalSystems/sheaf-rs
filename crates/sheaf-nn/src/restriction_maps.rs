@@ -135,6 +135,20 @@ pub fn build_directional_restriction_maps(
     build_restriction_maps_from_tables(r_stack, &graph.dir_uv, &graph.dir_vu)
 }
 
+/// Broadcast one shared base map `r_shared [d_e, d_v]` onto every edge and both
+/// endpoints -> `[E, 2, d_e, d_v]`. Ports `build_shared_restriction_maps`
+/// (mnist `rm_sharing = "global"`): a single learned map is used everywhere, so
+/// the LoRA slot (still direction-indexed) is the only per-edge variation.
+pub fn build_shared_restriction_maps(r_shared: &Array2<f32>, num_edges: usize) -> RestrictionMaps {
+    let (d_e, d_v) = (r_shared.shape()[0], r_shared.shape()[1]);
+    let mut out = RestrictionMaps::zeros((num_edges, 2, d_e, d_v));
+    for e in 0..num_edges {
+        out.slice_mut(s![e, 0, .., ..]).assign(r_shared);
+        out.slice_mut(s![e, 1, .., ..]).assign(r_shared);
+    }
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -281,6 +295,63 @@ mod tests {
                 assert_eq!((graph.dir_uv[e], graph.dir_vu[e]), (1, 3), "right edge {e}");
             } else {
                 assert_eq!((graph.dir_uv[e], graph.dir_vu[e]), (2, 0), "down edge {e}");
+            }
+        }
+    }
+
+    // ---- global (shared) restriction map (mnist) ----
+
+    #[test]
+    fn shared_broadcast_is_identical_on_every_edge_and_endpoint() {
+        let (d_e, d_v, e) = (2usize, 3usize, 5usize);
+        let r = Array2::from_shape_fn((d_e, d_v), |(i, j)| (i * 10 + j) as f32);
+        let maps = build_shared_restriction_maps(&r, e);
+        assert_eq!(maps.shape(), &[e, 2, d_e, d_v]);
+        for ei in 0..e {
+            for endpoint in 0..2 {
+                for i in 0..d_e {
+                    for j in 0..d_v {
+                        assert_eq!(maps[[ei, endpoint, i, j]], r[[i, j]]);
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn shared_global_geometry_matches_dense_reference() {
+        // Global sharing + zero LoRA update (B=0) must reduce to the plain
+        // shared-map coboundary F z_e = R z_u - R z_v on every edge (dense
+        // reference), independent of grid direction.
+        use sheaf_core::geometry::{LoraGeometry, SheafGeometry};
+        use sheaf_core::graph::AgentGraph;
+        use std::sync::Arc;
+
+        let (n, d_e, d_v, k, r_rank) = (4usize, 2usize, 3usize, 8usize, 1usize);
+        // 2x2 center grid, 8-conn edges.
+        let positions =
+            ndarray::array![[0.0f32, 0.0], [0.0, 1.0], [1.0, 0.0], [1.0, 1.0]];
+        let edges = vec![[0u32, 1], [0, 2], [0, 3], [1, 2], [1, 3], [2, 3]];
+        let graph = Arc::new(AgentGraph::new_grid(edges.clone(), positions, k));
+
+        let r_shared = Array2::from_shape_fn((d_e, d_v), |(i, j)| 0.5 - 0.3 * i as f32 + 0.2 * j as f32);
+        let base = build_shared_restriction_maps(&r_shared, graph.num_edges());
+
+        // Zero LoRA factors -> A B^T = 0 -> geometry is the pure base coboundary.
+        let a = ndarray::Array5::<f32>::zeros((n, 1, k, d_e, r_rank));
+        let b = ndarray::Array5::<f32>::zeros((n, 1, k, d_v, r_rank));
+        let geo = LoraGeometry::create_directional(graph.clone(), base, &a, &b, None, 1.0);
+
+        let z = sheaf_core::tensor::NodeState::from_shape_fn((n, 1, d_v), |(ni, _, d)| {
+            0.1 * ni as f32 + 0.7 * d as f32
+        });
+        let residuals = geo.edge_residuals(&z);
+        for (ei, &[u, v]) in edges.iter().enumerate() {
+            let zu = z.slice(s![u as usize, 0, ..]).to_owned();
+            let zv = z.slice(s![v as usize, 0, ..]).to_owned();
+            let ref_e: ndarray::Array1<f32> = r_shared.dot(&zu) - r_shared.dot(&zv);
+            for i in 0..d_e {
+                assert!((residuals[[ei, 0, i]] - ref_e[i]).abs() < 1e-6);
             }
         }
     }
