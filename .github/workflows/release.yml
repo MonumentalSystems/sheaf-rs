@@ -1,5 +1,7 @@
 # Publishes sheaf-core, sheaf-io, sheaf-nn to crates.io (in dependency order)
-# when a v* tag is pushed. sheaf-demo is publish = false (repo-only binaries).
+# when a v* tag is pushed, then attaches the browser-demo bundle
+# (sheaf-web-demo-<tag>.zip: web/ + the wasm-bindgen pkg) to the GitHub
+# release. sheaf-demo and sheaf-web are publish = false (repo-only).
 #
 # Requires the repository secret CARGO_REGISTRY_TOKEN (a crates.io API token
 # with publish-new + publish-update scope). After the first publish, this can
@@ -28,7 +30,13 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown
       - uses: Swatinem/rust-cache@v2
+      - name: Install wasm-bindgen-cli (pinned, matches crates/sheaf-web)
+        uses: taiki-e/install-action@v2
+        with:
+          tool: wasm-bindgen@0.2.126
 
       - name: Check tag matches workspace version
         run: |
@@ -60,10 +68,26 @@ jobs:
             fi
           done
 
-      - name: GitHub release
+      - name: GitHub release (create before upload; idempotent for reruns)
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          gh release create "${GITHUB_REF_NAME}" \
-            --title "sheaf-rs ${GITHUB_REF_NAME}" \
-            --notes "Published sheaf-core, sheaf-io, sheaf-nn ${GITHUB_REF_NAME#v} to crates.io."
+          gh release view "${GITHUB_REF_NAME}" > /dev/null 2>&1 || \
+            gh release create "${GITHUB_REF_NAME}" \
+              --title "sheaf-rs ${GITHUB_REF_NAME}" \
+              --notes "Published sheaf-core, sheaf-io, sheaf-nn ${GITHUB_REF_NAME#v} to crates.io."
+
+      # Same bundle the Pages workflow deploys: static web/ + wasm-bindgen pkg.
+      - name: Build browser demo bundle (web/ + wasm pkg)
+        run: |
+          cargo build --target wasm32-unknown-unknown --release -p sheaf-web
+          wasm-bindgen --target web --out-dir web/pkg \
+            target/wasm32-unknown-unknown/release/sheaf_web.wasm
+          (cd web && zip -r "../sheaf-web-demo-${GITHUB_REF_NAME}.zip" . -x "test/*")
+
+      - name: Upload demo bundle to the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release upload "${GITHUB_REF_NAME}" \
+            "sheaf-web-demo-${GITHUB_REF_NAME}.zip" --clobber

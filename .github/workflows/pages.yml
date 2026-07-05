@@ -1,0 +1,77 @@
+# Builds the sheaf-web wasm module + browser demo and deploys web/ to GitHub
+# Pages (https://monumentalsystems.github.io/sheaf-rs/).
+#
+# web/pkg/ is build output (gitignored): this workflow regenerates it with the
+# pinned wasm-bindgen-cli 0.2.126, which must match the wasm-bindgen crate pin
+# in crates/sheaf-web/Cargo.toml.
+name: Deploy browser demo to Pages
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "crates/**"
+      - "web/**"
+      - "goldens/**"
+      - "Cargo.toml"
+      - "Cargo.lock"
+      - ".github/workflows/pages.yml"
+  workflow_dispatch:
+
+env:
+  CARGO_TERM_COLOR: always
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: pages
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown
+      - uses: Swatinem/rust-cache@v2
+      - name: Install wasm-bindgen-cli (pinned)
+        uses: taiki-e/install-action@v2
+        with:
+          tool: wasm-bindgen@0.2.126
+
+      - name: Build sheaf-web (wasm32 release)
+        run: cargo build --target wasm32-unknown-unknown --release -p sheaf-web
+
+      - name: wasm-bindgen into web/pkg
+        run: |
+          wasm-bindgen --target web --out-dir web/pkg \
+            target/wasm32-unknown-unknown/release/sheaf_web.wasm
+          ls -la web/pkg
+
+      - name: UI smoke test (mock + real wasm)
+        run: |
+          node web/test/ui_smoke.mjs
+          wasm-bindgen --target nodejs --out-dir /tmp/sheaf-web-nodejs-pkg \
+            target/wasm32-unknown-unknown/release/sheaf_web.wasm
+          SHEAF_WEB_MODULE=/tmp/sheaf-web-nodejs-pkg/sheaf_web.js \
+            node web/test/ui_smoke.mjs
+
+      - uses: actions/configure-pages@v5
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: web
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@v4
