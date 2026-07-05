@@ -3,9 +3,13 @@
 # (sheaf-web-demo-<tag>.zip: web/ + the wasm-bindgen pkg) to the GitHub
 # release. sheaf-demo and sheaf-web are publish = false (repo-only).
 #
-# Requires the repository secret CARGO_REGISTRY_TOKEN (a crates.io API token
-# with publish-new + publish-update scope). After the first publish, this can
-# be migrated to crates.io Trusted Publishing (OIDC) and the secret dropped.
+# Publishing uses crates.io Trusted Publishing (OIDC): the
+# rust-lang/crates-io-auth-action step mints a short-lived registry token, so
+# no long-lived CARGO_REGISTRY_TOKEN secret is needed. ONE-TIME SETUP per
+# crate (sheaf-core, sheaf-nn, sheaf-io): on crates.io, crate Settings ->
+# Trusted Publishing -> add this GitHub repo with workflow filename
+# "release.yml" (and environment "crates-io"). Once configured, the old
+# CARGO_REGISTRY_TOKEN repository secret can be deleted.
 #
 # Release procedure:
 #   1. bump [workspace.package].version and the three intra-workspace dep
@@ -20,13 +24,13 @@ on:
 env:
   CARGO_TERM_COLOR: always
 
-permissions:
-  contents: write # gh release create
-
 jobs:
   publish:
     runs-on: ubuntu-latest
     environment: crates-io
+    permissions:
+      contents: write # gh release create + asset upload
+      id-token: write # crates.io Trusted Publishing (OIDC)
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
@@ -54,9 +58,13 @@ jobs:
       # the sparse index before returning, so sequential publishes are safe.
       # Each step skips versions already on crates.io so a partially-failed
       # release can be re-run.
+      - name: Authenticate with crates.io (Trusted Publishing / OIDC)
+        id: auth
+        uses: rust-lang/crates-io-auth-action@v1
+
       - name: Publish sheaf-core, sheaf-nn, sheaf-io (in order)
         env:
-          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
+          CARGO_REGISTRY_TOKEN: ${{ steps.auth.outputs.token }}
         run: |
           v="${GITHUB_REF_NAME#v}"
           for c in sheaf-core sheaf-nn sheaf-io; do

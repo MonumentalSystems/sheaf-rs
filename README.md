@@ -155,6 +155,23 @@ uv run --directory <sheaf-admm checkout> python tools/convert_f16.py
 cargo test -p sheaf-web
 ```
 
+## Releasing
+
+Pushing a `v*` tag runs `.github/workflows/release.yml`, which gates on the
+workspace tests and the golden `parity_check` binary (the release fails if
+either fails), then publishes `sheaf-core` -> `sheaf-nn` -> `sheaf-io` to
+crates.io in dependency order and attaches the browser-demo bundle to the
+GitHub release.
+
+Publishing authenticates via crates.io **Trusted Publishing (OIDC)** using
+[`rust-lang/crates-io-auth-action`](https://github.com/rust-lang/crates-io-auth-action);
+no long-lived API token is stored in the repo. One-time manual setup, per
+crate (`sheaf-core`, `sheaf-nn`, `sheaf-io`): on crates.io open the crate's
+*Settings -> Trusted Publishing* and add this GitHub repository with workflow
+filename `release.yml` (environment: `crates-io`). After that is configured
+for all three crates, the legacy `CARGO_REGISTRY_TOKEN` repository secret can
+be deleted.
+
 ## License
 
 Apache-2.0 (see [LICENSE](LICENSE)). This project is derived from
