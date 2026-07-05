@@ -731,7 +731,7 @@ mod tests {
                 lora_rank: r,
                 lora_alpha: 1.0,
                 q_epsilon: 1e-4,
-                l1_weight: 0.006337180166370117,
+                l1_weight: 0.006_337_180_3,
             },
         }
     }
@@ -753,7 +753,7 @@ mod tests {
                 assert_eq!(q.shape(), &[5, 2, 3]);
                 assert!(q_diag.iter().all(|&v| v >= 1e-4), "q_diag floored at q_epsilon");
                 // scalar lasso weight is passed through unchanged.
-                assert_abs_diff_eq!(*l1, 0.006337180166370117, epsilon = 0.0);
+                assert_abs_diff_eq!(*l1, 0.006_337_180_3, epsilon = 0.0);
             }
             _ => panic!("mnist encoder must emit Objective::Lasso"),
         }

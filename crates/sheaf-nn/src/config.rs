@@ -342,7 +342,7 @@ mod tests {
         assert_eq!(cfg.model.lora_rank, 8);
         assert_eq!(cfg.model.dec_linear_head, Some(true));
         assert_eq!(cfg.model.dec_readout_mode.as_deref(), Some("x_only"));
-        assert_eq!(cfg.l1_weight(), 0.006337180166370117);
+        assert_eq!(cfg.l1_weight(), 0.006_337_180_3);
         assert_eq!(cfg.task.task, "mnist");
         assert_eq!(cfg.task.stride, 3);
         assert_eq!(cfg.baked.rho, 0.12);

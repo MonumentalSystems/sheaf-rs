@@ -215,6 +215,7 @@ impl Svg {
         ));
     }
 
+    #[allow(clippy::too_many_arguments)] // SVG line primitive: geometry + style params
     fn line(&mut self, x1: f64, y1: f64, x2: f64, y2: f64, stroke: &str, width: f64, dash: &str) {
         let dash_attr = if dash.is_empty() {
             String::new()
@@ -266,6 +267,7 @@ impl Svg {
     }
 
     /// `anchor`: start | middle | end. `rotate`: degrees around (x, y), 0 = none.
+    #[allow(clippy::too_many_arguments)] // SVG text primitive: placement + style params
     fn text(&mut self, x: f64, y: f64, size: f64, anchor: &str, fill: &str, rotate: f64, s: &str) {
         let esc = s.replace('&', "&amp;").replace('<', "&lt;").replace('>', "&gt;");
         let transform = if rotate != 0.0 {

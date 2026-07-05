@@ -1082,7 +1082,7 @@ mod tests {
         assert_eq!(p.q_diag_dense.kernel.dim(), (5, 4));
         assert_eq!(p.lora_a_dense.kernel.dim(), (5, 8 * 3 * 2)); // K*d_e*r
         assert_eq!(p.lora_b_dense.kernel.dim(), (5, 8 * 4 * 2)); // K*d_v*r
-        assert_eq!(model.encoder.config.l1_weight, 0.006337180166370117);
+        assert_eq!(model.encoder.config.l1_weight, 0.006_337_180_3);
 
         // Decoder: bare linear head [d_v, num_classes], x_only readout.
         assert_eq!(model.decoder.params.cls_output.kernel.dim(), (4, 10));
