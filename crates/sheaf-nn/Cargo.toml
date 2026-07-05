@@ -3,6 +3,7 @@ name = "sheaf-nn"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
+repository.workspace = true
 description = "Inference-only layers, encoders/decoders, and the Sheaf-ADMM model"
 
 [dependencies]

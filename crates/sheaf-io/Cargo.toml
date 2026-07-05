@@ -3,6 +3,7 @@ name = "sheaf-io"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
+repository.workspace = true
 description = "Weights (safetensors), golden fixtures (.npz), data views, and the maze generator"
 
 [dependencies]

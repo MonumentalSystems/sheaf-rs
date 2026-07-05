@@ -101,3 +101,9 @@ exact layout is pinned in `goldens/CONTRACT.md`.
   `parity_check` (golden replay for CI).
 - `goldens/` — committed golden fixtures + `CONTRACT.md` (the exporter/consumer
   interface).
+
+## License
+
+Apache-2.0 (see [LICENSE](LICENSE)). This project is derived from
+[SakanaAI/sheaf-admm](https://github.com/SakanaAI/sheaf-admm), itself
+Apache-2.0 — see [NOTICE](NOTICE) for attribution.

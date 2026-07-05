@@ -11,6 +11,7 @@ members = [
 edition = "2021"
 version = "0.1.0"
 license = "Apache-2.0"
+repository = "https://github.com/MonumentalSystems/sheaf-rs"
 
 [workspace.dependencies]
 # Core tensors. f32 default everywhere (matches the JAX fp32/no-TF32 pin).

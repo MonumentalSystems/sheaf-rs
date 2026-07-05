@@ -3,6 +3,7 @@ name = "sheaf-core"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
+repository.workspace = true
 description = "Sheaf-ADMM coordination core: graph, geometry, solvers, unrolled ADMM (ndarray only)"
 
 [dependencies]
