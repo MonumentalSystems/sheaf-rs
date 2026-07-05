@@ -1,63 +1,67 @@
 # How these fixtures were produced
 
-Generated on 2026-07-04 from SakanaAI/sheaf-admm at commit
-`1e2b5d648361802234348b0b1a7fb3a222128e7d` (the repo's uv env, JAX 0.10.1 /
-Flax 0.12.7, CPU, fp32 matmul precision pinned to `highest` by importing
-`sheaf_admm`). The model is the shipped `configs/experiment/maze_sheaf.yaml`
-config (MLPEncoderV2, l1box_diag, LoRA rank-4 8-way directional maps,
-ConcatMLPDecoderV2, prox-mode unrolled CG T=5, gamma=5.0, rho_init=0.25,
-d_v=10, d_e=5), **TRAINED** — the weights come from a real training run, not
-seed-0 init.
+Generated on 2026-07-05 from SakanaAI/sheaf-admm at commit
+`1e2b5d648361802234348b0b1a7fb3a222128e7d` (the repo's uv env, JAX 0.10.2 /
+Flax, **GPU — NVIDIA GB10**, fp32 matmul precision pinned to `highest` by
+importing `sheaf_admm`). The model is the shipped
+`configs/experiment/maze_sheaf.yaml` config (MLPEncoderV2, l1box_diag, LoRA
+rank-4 8-way directional maps, ConcatMLPDecoderV2, prox-mode unrolled CG T=5,
+gamma=5.0, rho_init=0.25, d_v=10, d_e=5), **TRAINED at the paper config** —
+these are paper-scale weights, not a small-dataset sanity run.
 
 ## Training run (provenance)
 
-`scripts/train.py experiment=maze_sheaf` (Hydra output
-`outputs/2026-07-04/23-02-17/`), 30 epochs on `datasets/maze_small`
-(19×19 mazes), seed 42, lr 3e-4, batch 128, K_train=40 (uniform 15..40),
-K_eval=100, EMA decay 0.999, CPU. This is a small-dataset CPU sanity run,
-**not a paper reproduction**. Final epoch-29 eval (EMA weights, K=100):
+`scripts/train.py +experiment=maze_sheaf training.seed=42 data.val_splits=[test]`
+(Hydra output `outputs/maze_seed42/`), **50 epochs** on
+`datasets/maze_std3_19px_10k` (10k train / 1k test + OOD splits, 19×19
+in-distribution), seed 42, lr 3e-4, batch 128, K_train=40 (uniform 15..40),
+K_eval=100, EMA decay 0.999, GPU. This is the paper maze configuration and
+reaches the paper's Table 1 maze operating point. Eval (EMA weights, K=100):
 
-| split | solved | cell_acc |
-|---|---|---|
-| test (19×19) | 99.61% | 100.00% |
-| test_ood_2x (37×37) | 53.43% | 96.41% |
-| test_ood_2xW (37×37 wide) | 88.45% | 99.63% |
-| test_ood_4x (73×73) | 5.43% | 91.66% |
-| test_ood_4xW (73×73 wide) | 52.60% | 97.02% |
+| split | solved | cell_acc | source |
+|---|---|---|---|
+| test (19×19, in-dist) | 100.00% | 100.00% | history.json (epoch 49) |
+| test_ood_2x (37×37) | 98.30% | 99.95% | eval_seed42.json |
+| test_ood_2xW (37×37 wide) | 99.80% | 99.99% | eval_seed42.json |
+| test_ood_4x (73×73) | 7.50% | 90.25% | eval_seed42.json |
+| test_ood_4xW (73×73 wide) | 99.20% | 99.96% | eval_seed42.json |
+
+(In-distribution eval ran during training with `val_splits=[test]` to keep the
+73×73 OOD memory spike off the shared box; the OOD splits were evaluated
+afterward on the saved EMA checkpoint with `tools/eval_checkpoint.py` at
+K_eval=100 and dumped to `goldens/maze/eval_seed42.json`.)
 
 The raw `checkpoint.pkl` (`{"params", "ema_params", "config"}`, pickled Flax
-variables dicts) and the per-epoch `history.json` from that run are committed
-alongside these fixtures as provenance.
+variables dicts), the per-epoch `history.json`, and `eval_seed42.json` are
+committed alongside these fixtures as provenance.
 
 ## Export
 
-`export_weights.py --checkpoint checkpoint.pkl` loaded the trained `params`
-and `ema_params` pytrees from the pickle (stripping each tree's top-level
-Flax `params` collection key), asserted the pickled Hydra `model` block equal
-to the experiment yaml, and dumped both collections (35 arrays / 181,859
-params each). The scalar `rho` was baked at export as
-`softplus(rho_raw + inverse_softplus(0.25))` on the **EMA** `rho_raw`
-(trained value 0.32267 → baked rho **0.33087394**; rho is learnable and moved
-from its 0.25 init). No other offset-softplus scalar exists in this config
-(`eta_raw` is GD-solver-only). `config.json` carries `"trained": true` plus a
-`"training"` provenance block (dataset, epochs, final metrics).
+`export_weights.py --repo <sheaf-admm> --out goldens/maze --checkpoint
+checkpoint.pkl` loaded the trained `params` and `ema_params` pytrees, asserted
+the pickled Hydra `model` block equal to the experiment yaml, and dumped both
+collections (70 tensors total, 181,859 params each). The scalar `rho` was
+baked at export as `softplus(rho_raw + inverse_softplus(0.25))` on the **EMA**
+`rho_raw` (baked rho **0.80284047**; rho is learnable and moved well above its
+0.25 init on this longer run). `config.json` carries `"trained": true` plus a
+`"training"` provenance block.
 
-`dump_goldens.py` then loaded the **ema_params** tree back from
-`weights.safetensors` (round-tripping the exact bytes Rust will read), took
-the first 2 rows of the `test` split of `datasets/maze_small` in
-`iter_test_batches` order as the fixed batch (19x19 mazes, input tokens 1-4,
-labels add path token 5), built the agent graph exactly as
-`training.tasks.MazeTask.prepare` does (`grid_agent_centers((19,19),2,3)` ->
-N=81, `build_grid_edge_indices(..., 8)` -> E=272, `prepare_maze_patches` with
-wall pre-pad + one-hot C=6), and ran
-`model.apply(..., num_iters=12, node_positions=..., training=False,
-method=SheafADMMModel.coordinate_history)` for the K=12 trace. Encoder heads
-were dumped by applying the identically-configured `MLPEncoderV2` directly on
-the `MLPEncoderV2_0` param subtree (the parent's `_encode` is not
-`@nn.compact` and cannot be an apply method) with the parent's
-`[N*B] -> [N,B]` reshape. `reassembled_final` is
-`reassemble_logits(logits_per_iter[-1], centers, (19,19), 6, mode="mean")` and
-`pred_grid` its argmax, matching `MazeTask.evaluate` (with trained weights the
-K=12 pred_grid already contains PATH tokens). All shapes/dtypes were asserted
-against `manifest.json` after reload; `trace.npz:rho` was asserted
-bitwise-equal to `config.json:baked.rho`.
+`dump_goldens.py --out goldens/maze --dataset datasets/maze_std3_19px_10k`
+then loaded the **ema_params** tree from `weights.safetensors`, took the first
+2 rows of the `test` split (19×19 mazes) as the fixed batch, built the agent
+graph exactly as `training.tasks.MazeTask.prepare` (N=81, E=272, C=6), and ran
+`coordinate_history(num_iters=12)` for the K=12 trace. `reassembled_final` is
+the overlap-mean reassembly of the final logits and `pred_grid` its argmax.
+
+`convert_f16.py` down-casts the EMA tensors to f16 for
+`crates/sheaf-web/assets/weights_ema_f16.safetensors` (35 tensors, 358.8 KB).
+
+## Parity
+
+Rust `parity_check` replays these fixtures **106/106 GREEN**. All ADMM-state
+arrays (x/z/y + residuals + consistency) pass the tight widening schedule
+(1e-5 at k=0 → 1e-3 at k=K-1). The per-iteration **decoded `logits`** carry an
+f32 decoder-GEMM accumulation-order roundoff (~1e-4, independent of k — see
+`logits_final` at max_abs≈9.4e-5), so their absolute tolerance is floored at
+`LOGITS_ATOL_FLOOR = 1.5e-4` (states and rtol untouched); `pred_grid` is
+bitwise exact.

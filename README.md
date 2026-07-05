@@ -48,20 +48,22 @@ residuals keep falling — exactly matching the Python trace.
 ## Trained weights
 
 `goldens/maze/` carries an EMA checkpoint trained with the upstream
-`scripts/train.py experiment=maze_sheaf`: **30 epochs on
-`datasets/maze_small`, CPU, seed 42** — a small-dataset sanity run, **not a
-paper reproduction**. The learnable scalar rho moved from its 0.25 init to a
-baked `softplus(rho_raw + inverse_softplus(0.25))` = **0.33087**. Final
-epoch-29 eval (EMA weights, K_eval=100), from the committed
-`goldens/maze/history.json`:
+`scripts/train.py +experiment=maze_sheaf`: the **paper maze config — 50
+epochs on `datasets/maze_std3_19px_10k` (10k train / 1k test + OOD splits),
+seed 42, GPU (NVIDIA GB10)**. The learnable scalar rho moved from its 0.25
+init to a baked `softplus(rho_raw + inverse_softplus(0.25))` = **0.80284**.
+Eval at K_eval=100 on the EMA weights (in-distribution from
+`goldens/maze/history.json`; OOD splits from `tools/eval_checkpoint.py`,
+saved to `goldens/maze/eval_seed42.json`) — matching the paper's Table 1
+maze operating point (single seed 42):
 
 | split | solved | cell_acc |
 |---|---|---|
-| test (19×19, in-dist) | **99.61%** | **100.00%** |
-| test_ood_2x (37×37) | 53.43% | 96.41% |
-| test_ood_2xW (37×37 wide) | 88.45% | 99.63% |
-| test_ood_4x (73×73) | 5.43% | 91.66% |
-| test_ood_4xW (73×73 wide) | 52.60% | 97.02% |
+| test (19×19, in-dist) | **100.00%** | **100.00%** |
+| test_ood_2x (37×37) | 98.30% | 99.95% |
+| test_ood_2xW (37×37 wide) | 99.80% | 99.99% |
+| test_ood_4x (73×73) | 7.50% | 90.25% |
+| test_ood_4xW (73×73 wide) | 99.20% | 99.96% |
 
 The raw `checkpoint.pkl` + `history.json` are committed alongside the
 fixtures as provenance; `tools/export_weights.py --checkpoint` converts a

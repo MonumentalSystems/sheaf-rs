@@ -40,37 +40,21 @@
     "loss_window": 4
   },
   "baked": {
-    "rho": 0.33087393641471863
+    "rho": 0.8028404712677002
   },
   "trained": true,
   "training": {
     "checkpoint": "checkpoint.pkl",
-    "dataset": "datasets/maze_small",
-    "epochs": 30,
+    "dataset": "datasets/maze_std3_19px_10k",
+    "epochs": 50,
     "seed": 42,
     "K_train": 40,
     "K_eval": 100,
     "ema_decay": 0.999,
     "final_metrics": {
       "test": {
-        "solved": 0.99609375,
-        "cell_acc": 0.9999891519546509
-      },
-      "test_ood_2x": {
-        "solved": 0.5342881977558136,
-        "cell_acc": 0.9640527665615082
-      },
-      "test_ood_2xW": {
-        "solved": 0.8845486044883728,
-        "cell_acc": 0.9962653815746307
-      },
-      "test_ood_4x": {
-        "solved": 0.0542534738779068,
-        "cell_acc": 0.9166160523891449
-      },
-      "test_ood_4xW": {
-        "solved": 0.5260416716337204,
-        "cell_acc": 0.9701991379261017
+        "solved": 1.0,
+        "cell_acc": 1.0
       }
     }
   }
