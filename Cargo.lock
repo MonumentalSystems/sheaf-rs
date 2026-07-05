@@ -394,7 +394,7 @@ dependencies = [
 
 [[package]]
 name = "sheaf-core"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "approx",
  "ndarray",
@@ -402,7 +402,7 @@ dependencies = [
 
 [[package]]
 name = "sheaf-demo"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "anyhow",
  "ndarray",
@@ -413,7 +413,7 @@ dependencies = [
 
 [[package]]
 name = "sheaf-io"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "anyhow",
  "approx",
@@ -429,7 +429,7 @@ dependencies = [
 
 [[package]]
 name = "sheaf-nn"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "anyhow",
  "approx",

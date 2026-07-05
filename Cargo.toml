@@ -9,7 +9,7 @@ members = [
 
 [workspace.package]
 edition = "2021"
-version = "0.1.0"
+version = "0.1.1"
 license = "Apache-2.0"
 repository = "https://github.com/MonumentalSystems/sheaf-rs"
 
@@ -28,6 +28,6 @@ anyhow = "1"
 half = "2"
 
 # Intra-workspace (version is required for crates.io publishing; path wins locally)
-sheaf-core = { path = "crates/sheaf-core", version = "0.1.0" }
-sheaf-io = { path = "crates/sheaf-io", version = "0.1.0" }
-sheaf-nn = { path = "crates/sheaf-nn", version = "0.1.0" }
+sheaf-core = { path = "crates/sheaf-core", version = "0.1.1" }
+sheaf-io = { path = "crates/sheaf-io", version = "0.1.1" }
+sheaf-nn = { path = "crates/sheaf-nn", version = "0.1.1" }
