@@ -18,6 +18,9 @@ on:
 env:
   CARGO_TERM_COLOR: always
 
+permissions:
+  contents: write # gh release create
+
 jobs:
   publish:
     runs-on: ubuntu-latest
