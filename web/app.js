@@ -30,9 +30,14 @@ export const SERIES = [
   { key: "dual", label: "dual", color: "#c98500" },
 ];
 
-/** K per maze size: 100 in-distribution (19), 60 for 37x37 OOD. */
+/** K (ADMM iterations) per maze size. OOD mazes have a larger agent-graph
+ *  diameter, so consensus needs a LONGER horizon to propagate across them —
+ *  scale K up with size, not down. 19 = in-distribution, 37 = 2x, 73 = 4x.
+ *  (The wasm session allows up to k=1000; the iteration slider follows this.) */
 export function defaultK(h) {
-  return h <= 19 ? 100 : 60;
+  if (h <= 19) return 100; // in-distribution
+  if (h <= 37) return 200; // 2x OOD
+  return 300;              // 4x OOD (frame-skipped during animation)
 }
 
 /** Module URL for the given query string ('?mock=1' -> the JS mock). */
@@ -430,10 +435,13 @@ async function boot() {
     if (!st.playing) return;
     if (now - lastStep >= FRAME_MS) {
       lastStep = now;
+      // Advance >1 iter/frame on long (OOD) runs so a K=300 pass still plays
+      // in ~10s; the slider can still scrub to every individual iteration.
+      const stride = Math.max(1, Math.ceil(st.k / 150));
       if (st.iter + 1 >= st.k) {
         setPlaying(false);
       } else {
-        setIter(st.iter + 1);
+        setIter(Math.min(st.iter + stride, st.k - 1));
       }
     }
     if (st.playing) requestAnimationFrame(tick);

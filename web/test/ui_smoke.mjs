@@ -35,7 +35,8 @@ function ok(cond, msg) {
 }
 
 // ---- static helpers --------------------------------------------------------
-ok(defaultK(19) === 100 && defaultK(37) === 60, "defaultK: 100 @19, 60 @37");
+ok(defaultK(19) === 100 && defaultK(37) === 200 && defaultK(73) === 300,
+   "defaultK scales up with size: 100 @19, 200 @37 (2x OOD), 300 @73 (4x OOD)");
 ok(wasmModuleUrl("?mock=1") === "./mock/sheaf_web.js", "?mock=1 -> mock module URL");
 ok(wasmModuleUrl("") === "./pkg/sheaf_web.js", "default -> pkg module URL");
 ok(Object.keys(CLASS_COLORS).length === 6, "six token classes colored");
