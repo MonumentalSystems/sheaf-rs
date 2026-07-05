@@ -302,18 +302,28 @@ fn run() -> anyhow::Result<()> {
         println!("{:>6}  {:>15.6}  {:>12.6}  {:>12.6}", k, cons, primal, dual);
     }
     // Consistency rises for a few iterations off the warm z_init = h seed
-    // (matches the Python trace), then must decrease as ADMM drives agreement.
+    // (matches the Python trace). With random-init weights it then decreases
+    // as ADMM drives agreement; the trained maze model instead settles into a
+    // near-flat plateau — prox-mode consensus is soft (gamma-weighted), so the
+    // converged solution holds a steady nonzero edge disagreement while the
+    // primal/dual residuals keep falling.
     let (peak_k, &(c_peak, ..)) = metrics
         .iter()
         .enumerate()
         .max_by(|a, b| a.1 .0.total_cmp(&b.1 .0))
         .expect("non-empty history");
     let (c_last, ..) = metrics[k_total - 1];
+    let tail_min = metrics[k_total / 2..]
+        .iter()
+        .map(|m| m.0)
+        .fold(f32::INFINITY, f32::min);
     println!(
         "\nconsistency RMS: peak {c_peak:.6} (iter {peak_k}) -> {c_last:.6} (iter {}): {}",
         k_total - 1,
         if c_last < c_peak || k_total == 1 {
             "DECREASING — ADMM drives the agents toward agreement"
+        } else if c_last <= tail_min * 1.05 {
+            "PLATEAU — soft (gamma-weighted) consensus holds steady disagreement"
         } else {
             "did NOT decrease (unexpected)"
         }

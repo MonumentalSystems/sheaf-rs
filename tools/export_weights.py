@@ -7,12 +7,33 @@ Run from the upstream sheaf-admm checkout (uv env):
         --repo /Users/rjs/.claude/jobs/707f1939/tmp/sheaf-admm \
         --out  /rjs/AI/sheaf-rs/goldens/maze
 
-No training: the model is *initialized* (jax.random seed 0, mirroring
-``create_train_state``: ``init_rng, dropout_rng = split(PRNGKey(0))``) and both
-the ``params`` and ``ema_params`` trees are dumped (EMA at init is a copy of
-params, exactly as ``init_ema`` produces). The offset-softplus scalar ``rho``
-is baked to its plain value in config.json (PLAN.md section 3.5); the raw
-``rho_raw`` stays in the safetensors for completeness but Rust ignores it.
+Two modes:
+
+* default (no ``--checkpoint``): the model is *initialized* (jax.random seed 0,
+  mirroring ``create_train_state``: ``init_rng, dropout_rng =
+  split(PRNGKey(0))``) and both the ``params`` and ``ema_params`` trees are
+  dumped (EMA at init is a copy of params, exactly as ``init_ema`` produces).
+* ``--checkpoint path/to/checkpoint.pkl``: the TRAINED ``params`` and
+  ``ema_params`` pytrees are loaded from the pickle written by
+  ``scripts/train.py`` (``{"params", "ema_params", "config"}``; each tree is
+  the Flax variables dict, i.e. wrapped in a top-level ``params`` collection
+  key that is stripped here). The pickled Hydra config's ``model`` block is
+  asserted equal to the experiment yaml's so the goldens can't silently mix
+  architectures. ``config.json`` gains ``"trained": true`` and a
+  ``"training"`` provenance block (dataset, epochs, final metrics from the
+  sibling ``history.json``).
+
+In both modes the offset-softplus scalar ``rho`` is baked to its plain value
+in config.json (PLAN.md section 3.5): ``softplus(rho_raw +
+inverse_softplus(rho_init))`` evaluated on the **EMA** ``rho_raw`` — NOT
+assumed to be rho_init, since ``rho_learnable`` defaults true and training
+moves it. (``eta_raw`` is the only other offset-softplus scalar in
+``SheafADMMModel`` and exists only for the GD z-solver, which no shipped
+config uses — the maze checkpoint contains exactly one scalar, ``rho_raw``,
+and the key manifest would fail loudly if that changed. ``l1_weight`` /
+``upper`` / ``q_diag`` are input-dependent softplus heads, computed in Rust.)
+The raw ``rho_raw`` stays in the safetensors for completeness but Rust
+ignores it.
 
 Writes into --out:
     config.json          model + task + baked scalars (contract shape)
@@ -101,7 +122,11 @@ def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument("--repo", type=Path, required=True, help="upstream sheaf-admm checkout")
     ap.add_argument("--out", type=Path, required=True, help="goldens/maze output dir")
-    ap.add_argument("--seed", type=int, default=0)
+    ap.add_argument("--seed", type=int, default=0,
+                    help="init seed (ignored when --checkpoint is given)")
+    ap.add_argument("--checkpoint", type=Path, default=None,
+                    help="trained checkpoint.pkl from scripts/train.py; "
+                         "loads its params/ema_params instead of seed-init")
     args = ap.parse_args()
 
     sys.path.insert(0, str(args.repo / "src"))
@@ -134,20 +159,70 @@ def main() -> None:
         tokens, centers, task_cfg["patch_size"], task_cfg["num_classes"]
     )
 
-    # --- init exactly as training.loop.create_train_state does (seed 0) ---
-    init_rng, dropout_rng = jax.random.split(jax.random.PRNGKey(args.seed))
-    variables = model.init(
-        {"params": init_rng, "dropout": dropout_rng},
-        patches,
-        edges,
-        num_iters=2,
-        loss_window=1,
-        node_positions=npos,
-        training=False,
-    )
-    params = variables["params"]
-    # EMA at init: a copy of the params (training.optim.init_ema).
-    ema_params = jax.tree_util.tree_map(jnp.copy, params)
+    training_provenance = None
+    if args.checkpoint is not None:
+        # --- trained pytrees from scripts/train.py's checkpoint.pkl ---
+        import pickle
+
+        with open(args.checkpoint, "rb") as f:
+            ckpt = pickle.load(f)
+
+        def unwrap(tree):
+            # train.py pickles state.params, the Flax *variables* dict
+            # ({"params": {...}}); strip the collection key if present.
+            if isinstance(tree, dict) and set(tree) == {"params"}:
+                return tree["params"]
+            return tree
+
+        params = unwrap(ckpt["params"])
+        ema_params = unwrap(ckpt["ema_params"])
+
+        # The checkpoint must be the same architecture the yaml describes.
+        ckpt_model = dict(ckpt["config"]["model"])
+        if ckpt_model != dict(model_dict):
+            diff = {
+                k: (model_dict.get(k), ckpt_model.get(k))
+                for k in set(model_dict) | set(ckpt_model)
+                if model_dict.get(k) != ckpt_model.get(k)
+            }
+            raise SystemExit(f"checkpoint model config != {args.repo}/configs yaml: {diff}")
+
+        # Provenance: dataset/epochs from the pickled Hydra config, final
+        # metrics from the sibling history.json written by the same run.
+        tr = ckpt["config"]["training"]
+        history_path = args.checkpoint.parent / "history.json"
+        final_metrics = None
+        if history_path.exists():
+            history = json.loads(history_path.read_text())
+            if history:
+                final_metrics = {
+                    k: v for k, v in history[-1].items() if k not in ("epoch", "loss")
+                }
+        training_provenance = {
+            "checkpoint": args.checkpoint.name,
+            "dataset": ckpt["config"]["data"]["dir"],
+            "epochs": tr["epochs"],
+            "seed": tr["seed"],
+            "K_train": tr["K_train"],
+            "K_eval": tr["K_eval"],
+            "ema_decay": tr["ema_decay"],
+            "final_metrics": final_metrics,
+        }
+    else:
+        # --- init exactly as training.loop.create_train_state does (seed 0) ---
+        init_rng, dropout_rng = jax.random.split(jax.random.PRNGKey(args.seed))
+        variables = model.init(
+            {"params": init_rng, "dropout": dropout_rng},
+            patches,
+            edges,
+            num_iters=2,
+            loss_window=1,
+            node_positions=npos,
+            training=False,
+        )
+        params = variables["params"]
+        # EMA at init: a copy of the params (training.optim.init_ema).
+        ema_params = jax.tree_util.tree_map(jnp.copy, params)
 
     flat = flatten_params(params)
     flat_ema = flatten_params(ema_params)
@@ -210,6 +285,9 @@ def main() -> None:
         },
         "baked": {"rho": float(rho_baked)},
     }
+    if training_provenance is not None:
+        config_json["trained"] = True
+        config_json["training"] = training_provenance
 
     args.out.mkdir(parents=True, exist_ok=True)
     save_file(tensors, str(args.out / "weights.safetensors"))
@@ -227,7 +305,9 @@ def main() -> None:
         "config": "maze_sheaf",
         "generator": {
             "upstream_commit": sha,
-            "seed": args.seed,
+            "seed": None if args.checkpoint is not None else args.seed,
+            "trained": args.checkpoint is not None,
+            "checkpoint": args.checkpoint.name if args.checkpoint is not None else None,
             "B": 2,
             "K": 12,
             "N": int(centers.shape[0]),

@@ -2,7 +2,9 @@
   "config": "maze_sheaf",
   "generator": {
     "upstream_commit": "1e2b5d648361802234348b0b1a7fb3a222128e7d",
-    "seed": 0,
+    "seed": null,
+    "trained": true,
+    "checkpoint": "checkpoint.pkl",
     "B": 2,
     "K": 12,
     "N": 81,

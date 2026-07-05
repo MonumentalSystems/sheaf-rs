@@ -6,14 +6,42 @@ Flax 0.12.7, CPU, fp32 matmul precision pinned to `highest` by importing
 `sheaf_admm`). The model is the shipped `configs/experiment/maze_sheaf.yaml`
 config (MLPEncoderV2, l1box_diag, LoRA rank-4 8-way directional maps,
 ConcatMLPDecoderV2, prox-mode unrolled CG T=5, gamma=5.0, rho_init=0.25,
-d_v=10, d_e=5), **randomly initialized — no training**: `export_weights.py`
-mirrors `training.loop.create_train_state` exactly with seed 0
-(`init_rng, dropout_rng = jax.random.split(jax.random.PRNGKey(0))`,
-`model.init({"params": init_rng, "dropout": dropout_rng}, ..., training=False)`),
-so `ema_params` is a bytewise copy of `params` (EMA at init, per
-`training.optim.init_ema`). The scalar `rho` was baked at export as
-`softplus(rho_raw + inverse_softplus(0.25))` on the EMA `rho_raw` (= exactly
-0.25, since `rho_raw` inits to zero); no other config overrides were applied.
+d_v=10, d_e=5), **TRAINED** — the weights come from a real training run, not
+seed-0 init.
+
+## Training run (provenance)
+
+`scripts/train.py experiment=maze_sheaf` (Hydra output
+`outputs/2026-07-04/23-02-17/`), 30 epochs on `datasets/maze_small`
+(19×19 mazes), seed 42, lr 3e-4, batch 128, K_train=40 (uniform 15..40),
+K_eval=100, EMA decay 0.999, CPU. This is a small-dataset CPU sanity run,
+**not a paper reproduction**. Final epoch-29 eval (EMA weights, K=100):
+
+| split | solved | cell_acc |
+|---|---|---|
+| test (19×19) | 99.61% | 100.00% |
+| test_ood_2x (37×37) | 53.43% | 96.41% |
+| test_ood_2xW (37×37 wide) | 88.45% | 99.63% |
+| test_ood_4x (73×73) | 5.43% | 91.66% |
+| test_ood_4xW (73×73 wide) | 52.60% | 97.02% |
+
+The raw `checkpoint.pkl` (`{"params", "ema_params", "config"}`, pickled Flax
+variables dicts) and the per-epoch `history.json` from that run are committed
+alongside these fixtures as provenance.
+
+## Export
+
+`export_weights.py --checkpoint checkpoint.pkl` loaded the trained `params`
+and `ema_params` pytrees from the pickle (stripping each tree's top-level
+Flax `params` collection key), asserted the pickled Hydra `model` block equal
+to the experiment yaml, and dumped both collections (35 arrays / 181,859
+params each). The scalar `rho` was baked at export as
+`softplus(rho_raw + inverse_softplus(0.25))` on the **EMA** `rho_raw`
+(trained value 0.32267 → baked rho **0.33087394**; rho is learnable and moved
+from its 0.25 init). No other offset-softplus scalar exists in this config
+(`eta_raw` is GD-solver-only). `config.json` carries `"trained": true` plus a
+`"training"` provenance block (dataset, epochs, final metrics).
+
 `dump_goldens.py` then loaded the **ema_params** tree back from
 `weights.safetensors` (round-tripping the exact bytes Rust will read), took
 the first 2 rows of the `test` split of `datasets/maze_small` in
@@ -29,6 +57,7 @@ the `MLPEncoderV2_0` param subtree (the parent's `_encode` is not
 `@nn.compact` and cannot be an apply method) with the parent's
 `[N*B] -> [N,B]` reshape. `reassembled_final` is
 `reassemble_logits(logits_per_iter[-1], centers, (19,19), 6, mode="mean")` and
-`pred_grid` its argmax, matching `MazeTask.evaluate`. All shapes/dtypes were
-asserted against `manifest.json` after reload; `trace.npz:rho` was asserted
+`pred_grid` its argmax, matching `MazeTask.evaluate` (with trained weights the
+K=12 pred_grid already contains PATH tokens). All shapes/dtypes were asserted
+against `manifest.json` after reload; `trace.npz:rho` was asserted
 bitwise-equal to `config.json:baked.rho`.

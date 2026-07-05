@@ -37,27 +37,46 @@ cargo test --workspace
 fresh maze), `--k N` ADMM iterations (default 40), `--fps F`, `--no-anim`.
 A captured `--no-anim` run lives in [docs/demo_output.txt](docs/demo_output.txt).
 
-The shipped goldens are **seed-0 random-init weights** (see
-`goldens/maze/NOTES.md`), so the demo prints an honest banner: it shows ADMM
-coordination dynamics (residuals converging, agents reaching agreement), not
-maze solving. The consistency RMS rises for a few iterations off the warm
-`z_init = h` seed, then decreases monotonically — exactly matching the Python
-trace. Exporting a trained checkpoint with `"trained": true` in `config.json`
-suppresses the banner.
+The shipped goldens are **trained weights** (`"trained": true` in
+`config.json`; see `goldens/maze/NOTES.md` for full provenance): the demo
+solves mazes — the predicted PATH cells trace the actual shortest
+start-to-goal route on generated and golden mazes alike. The consistency RMS
+rises off the warm `z_init = h` seed and settles into a near-flat plateau
+(prox-mode consensus is soft/gamma-weighted) while the primal and dual
+residuals keep falling — exactly matching the Python trace.
+
+## Trained weights
+
+`goldens/maze/` carries an EMA checkpoint trained with the upstream
+`scripts/train.py experiment=maze_sheaf`: **30 epochs on
+`datasets/maze_small`, CPU, seed 42** — a small-dataset sanity run, **not a
+paper reproduction**. The learnable scalar rho moved from its 0.25 init to a
+baked `softplus(rho_raw + inverse_softplus(0.25))` = **0.33087**. Final
+epoch-29 eval (EMA weights, K_eval=100), from the committed
+`goldens/maze/history.json`:
+
+| split | solved | cell_acc |
+|---|---|---|
+| test (19×19, in-dist) | **99.61%** | **100.00%** |
+| test_ood_2x (37×37) | 53.43% | 96.41% |
+| test_ood_2xW (37×37 wide) | 88.45% | 99.63% |
+| test_ood_4x (73×73) | 5.43% | 91.66% |
+| test_ood_4xW (73×73 wide) | 52.60% | 97.02% |
+
+The raw `checkpoint.pkl` + `history.json` are committed alongside the
+fixtures as provenance; `tools/export_weights.py --checkpoint` converts a
+checkpoint to the Rust-consumable safetensors + config.
 
 ## Parity status
 
 `parity_check` replays `goldens/maze/` (exported from the JAX reference at
-fp32/`highest` matmul precision) through the Rust pipeline: **106/106 checks
-green** — views (centers/edges/patches, bitwise), graph slot tables (exact),
-encoder heads + LoRA factors (1e-5), assembled base restriction maps
-(bitwise), all K=12 ADMM iterates x/z/y + primal/dual residuals + consistency
-+ per-iteration decoded logits (widening 1e-5 -> 1e-3 f32 tolerance schedule),
-final overlap-mean reassembly, and the argmax prediction grid (exact).
-
-Caveat: the goldens come from **randomly initialized** (seed 0) weights, so
-parity is proven for the full forward path, but the trained-checkpoint
-eval-metric acceptance (PLAN.md §5.2, K_eval=100) is pending a trained export.
+fp32/`highest` matmul precision, trained EMA weights) through the Rust
+pipeline: **106/106 checks green** — views (centers/edges/patches, bitwise),
+graph slot tables (exact), encoder heads + LoRA factors (1e-5), assembled
+base restriction maps (bitwise), all K=12 ADMM iterates x/z/y + primal/dual
+residuals + consistency + per-iteration decoded logits (widening 1e-5 -> 1e-3
+f32 tolerance schedule), final overlap-mean reassembly, and the argmax
+prediction grid (exact).
 
 ## Scope / non-goals
 

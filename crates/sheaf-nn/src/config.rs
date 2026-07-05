@@ -50,11 +50,16 @@ pub struct ExportedConfig {
     pub task: TaskConfig,
     pub baked: BakedScalars,
     /// Optional exporter provenance flag: `Some(true)` iff the checkpoint was
-    /// trained. The current exporter does not write it (the shipped goldens
-    /// are seed-0 random init — see goldens/maze/NOTES.md), so consumers must
-    /// treat `None` as not-known-trained and label output honestly.
+    /// trained (`export_weights.py --checkpoint`). Absent in random-init
+    /// exports, so consumers must treat `None` as not-known-trained and label
+    /// output honestly.
     #[serde(default)]
     pub trained: Option<bool>,
+    /// Optional free-form training provenance block written alongside
+    /// `trained: true` (dataset, epochs, final metrics). Informational only —
+    /// nothing in the inference path reads it, so it stays untyped.
+    #[serde(default)]
+    pub training: Option<serde_json::Value>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
