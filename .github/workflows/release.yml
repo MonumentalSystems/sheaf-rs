@@ -48,7 +48,21 @@ jobs:
           [ "v$v" = "${GITHUB_REF_NAME}" ] || { echo "tag ${GITHUB_REF_NAME} != workspace version v$v"; exit 1; }
 
       - name: Tests
-        run: cargo test --workspace
+        run: cargo test --workspace --all-targets --all-features --locked
+
+      - name: Published API docs
+        env:
+          RUSTDOCFLAGS: -D warnings
+        run: cargo doc -p sheaf-core -p sheaf-nn -p sheaf-io --all-features --no-deps --locked
+
+      - name: Package validation
+        run: |
+          cargo package -p sheaf-core -p sheaf-nn -p sheaf-io --locked
+          for crate in sheaf-core sheaf-nn sheaf-io; do
+            files="$(cargo package -p "$crate" --list --locked)"
+            grep -qx LICENSE <<<"$files"
+            grep -qx NOTICE <<<"$files"
+          done
 
       - name: Golden parity vs JAX reference
         run: cargo run --release -p sheaf-demo --bin parity_check
@@ -72,6 +86,7 @@ jobs:
                  "https://crates.io/api/v1/crates/$c/$v" > /dev/null; then
               echo "$c $v already published — skipping"
             else
+              cargo publish -p "$c" --locked --dry-run
               cargo publish -p "$c" --locked
             fi
           done

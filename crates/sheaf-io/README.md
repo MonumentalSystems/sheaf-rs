@@ -14,5 +14,9 @@ Part of the parity-tested Rust port of
 [arXiv:2605.31005](https://arxiv.org/abs/2605.31005)). See the
 [sheaf-rs](https://github.com/MonumentalSystems/sheaf-rs) workspace.
 
-Licensed Apache-2.0. Derived from sheaf-admm (Apache-2.0); see the
-repository NOTICE for attribution.
+The release-qualified model bundle is the maze artifact. MNIST and Sudoku
+loaders and views are scaffolding until trained weights and task-specific
+golden parity suites are published.
+
+Licensed Apache-2.0. Derived from sheaf-admm (Apache-2.0); the crate archive
+includes `LICENSE` and `NOTICE`.

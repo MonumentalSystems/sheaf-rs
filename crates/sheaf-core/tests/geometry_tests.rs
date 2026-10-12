@@ -156,7 +156,7 @@ fn batch_axis_is_independent_and_bitwise_equal() {
     // numerically identical ONLY because the Laplacian never mixes batch
     // elements. Pin that invariant: the b-th slab of a full [N, B, d_v] run must
     // equal — bit for bit — an independent single-batch [N, 1, d_v] run. Holds
-    // under the default, `parallel`, and `f64` builds alike.
+    // under both the default and `parallel` builds.
     let (geo, z) = setup(None);
     let r_full = geo.edge_residuals(&z);
     let mut l_full = NodeState::zeros(z.dim());

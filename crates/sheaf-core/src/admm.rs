@@ -42,9 +42,13 @@ pub enum XSolverKind {
 /// carried for convenience and must agree (debug-asserted by the drivers).
 #[derive(Debug, Clone, Copy)]
 pub struct AdmmParams {
+    /// Augmented-Lagrangian penalty used by both local and consensus updates.
     pub rho: Scalar,
+    /// Over-relaxation factor; `1.0` selects the bitwise fast path.
     pub alpha: Scalar,
+    /// Soft-consensus Laplacian weight, equal to the z-solver's `gamma`.
     pub gamma: Scalar,
+    /// Number of unrolled ADMM iterations.
     pub k: usize,
 }
 
@@ -62,13 +66,16 @@ pub struct AdmmState {
 /// Per-iteration ADMM trajectory (oldest first). Mirrors Python `ADMMHistory`.
 #[derive(Debug, Clone)]
 pub struct AdmmHistory {
-    pub x: Array4<Scalar>,               // [K, N, B, d_v]
-    pub z: Array4<Scalar>,               // [K, N, B, d_v]
-    pub y: Array4<Scalar>,               // [K, N, B, d_v]
+    /// Local primal proposals, shaped `[K, N, B, d_v]`.
+    pub x: Array4<Scalar>,
+    /// Consensus iterates, shaped `[K, N, B, d_v]`.
+    pub z: Array4<Scalar>,
+    /// Scaled dual iterates, shaped `[K, N, B, d_v]`.
+    pub y: Array4<Scalar>,
     /// `||x_relaxed - z||_2` over d_v, per agent.
-    pub primal_res: Array3<Scalar>,      // [K, N, B]
+    pub primal_res: Array3<Scalar>, // [K, N, B]
     /// `rho * ||z - z_prev||_2` over d_v, per agent.
-    pub dual_res: Array3<Scalar>,        // [K, N, B]
+    pub dual_res: Array3<Scalar>, // [K, N, B]
     /// Geometry `consistency_rms(z)` per iteration.
     pub consistency_rms: Array2<Scalar>, // [K, B]
 }
@@ -138,8 +145,15 @@ pub fn run_admm(
     let n_pre = params.k - window;
     let mut x_window = Vec::with_capacity(window);
     for i in 0..params.k {
-        let (new_state, _x_relaxed) =
-            admm_step(&state, enc, geometry, x_solver, z_params, params.rho, params.alpha);
+        let (new_state, _x_relaxed) = admm_step(
+            &state,
+            enc,
+            geometry,
+            x_solver,
+            z_params,
+            params.rho,
+            params.alpha,
+        );
         state = new_state;
         if i >= n_pre {
             x_window.push(state.x.clone());
@@ -174,8 +188,15 @@ pub fn run_admm_history(
     let mut state = init_state(z_init);
     for ki in 0..k {
         let z_prev = state.z.clone();
-        let (new_state, x_relaxed) =
-            admm_step(&state, enc, geometry, x_solver, z_params, params.rho, params.alpha);
+        let (new_state, x_relaxed) = admm_step(
+            &state,
+            enc,
+            geometry,
+            x_solver,
+            z_params,
+            params.rho,
+            params.alpha,
+        );
         state = new_state;
 
         hx.slice_mut(s![ki, .., .., ..]).assign(&state.x);

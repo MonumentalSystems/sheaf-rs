@@ -17,9 +17,9 @@ pub struct Npz {
 }
 
 impl Npz {
+    /// Opens an NPZ archive at `path`.
     pub fn open(path: &Path) -> anyhow::Result<Self> {
-        let file =
-            File::open(path).with_context(|| format!("opening npz {}", path.display()))?;
+        let file = File::open(path).with_context(|| format!("opening npz {}", path.display()))?;
         let reader = NpzReader::new(file)
             .with_context(|| format!("reading npz archive {}", path.display()))?;
         Ok(Npz {
@@ -35,12 +35,14 @@ impl Npz {
             .with_context(|| format!("listing arrays in {}", self.path))
     }
 
+    /// Reads a dynamically shaped fp32 array by name.
     pub fn f32(&mut self, name: &str) -> anyhow::Result<ArrayD<f32>> {
         self.reader
             .by_name::<ndarray::OwnedRepr<f32>, IxDyn>(name)
             .with_context(|| format!("reading f32 array {:?} from {}", name, self.path))
     }
 
+    /// Reads a dynamically shaped signed-64-bit integer array by name.
     pub fn i64(&mut self, name: &str) -> anyhow::Result<ArrayD<i64>> {
         self.reader
             .by_name::<ndarray::OwnedRepr<i64>, IxDyn>(name)

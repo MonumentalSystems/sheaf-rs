@@ -231,6 +231,6 @@ file contains an array absent from the manifest.
 - weights / `base_restriction_maps` / `rho`: bitwise (pure loading + gather);
 - encoder heads and `logits_final` at K=1: abs/rel ~1e-5;
 - trajectory arrays: widening schedule starting ~1e-5 rel at iter 1 (f32 CG
-  accumulation-order drift compounds); divergence is triaged with the f64
-  build before being called a bug;
+  accumulation-order drift compounds); divergence is triaged against isolated
+  f64 reference calculations and the exported JAX trace before being called a bug;
 - `reassembled_final`: 1e-4 abs.

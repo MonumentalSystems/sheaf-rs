@@ -11,6 +11,7 @@
 //! - encoders/decoders are shared across agents via the exact
 //!   `[N, B, ...] -> [N*B, ...] -> apply -> reshape back` contract;
 //! - dropout / training=True branches do not exist here (shipped rate = 0).
+#![deny(missing_docs)]
 
 pub mod config;
 pub mod decoder;

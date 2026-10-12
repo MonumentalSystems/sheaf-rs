@@ -24,27 +24,36 @@ use super::SheafGeometry;
 ///   (the gate multiplies the `A^T r` side, matching lora.py `_adjoint_endpoint`).
 /// `scale = lora_alpha / rank`.
 pub struct LoraGeometry {
+    /// Static agent graph whose oriented edges index all gathered factors.
     pub graph: Arc<AgentGraph>,
     /// Base maps R, `[E, 2, d_e, d_v]`.
     pub restriction_maps: RestrictionMaps,
+    /// LoRA numerator in the effective scale `lora_alpha / rank`.
     pub lora_alpha: Scalar,
-    pub a_u_edge: Array4<Scalar>, // [E, B, d_e, r]
-    pub a_v_edge: Array4<Scalar>, // [E, B, d_e, r]
-    pub b_u_edge: Array4<Scalar>, // [E, B, d_v, r]
-    pub b_v_edge: Array4<Scalar>, // [E, B, d_v, r]
-    pub gate_u_edge: Option<Array2<Scalar>>, // [E, B]
-    pub gate_v_edge: Option<Array2<Scalar>>, // [E, B]
-    pub edge_mask: Option<Vec<Scalar>>,      // [E]; applied once, in edge_residuals
+    /// Edge-gathered output factors for each u endpoint, `[E, B, d_e, r]`.
+    pub a_u_edge: Array4<Scalar>,
+    /// Edge-gathered output factors for each v endpoint, `[E, B, d_e, r]`.
+    pub a_v_edge: Array4<Scalar>,
+    /// Edge-gathered input factors for each u endpoint, `[E, B, d_v, r]`.
+    pub b_u_edge: Array4<Scalar>,
+    /// Edge-gathered input factors for each v endpoint, `[E, B, d_v, r]`.
+    pub b_v_edge: Array4<Scalar>,
+    /// Optional learned u-endpoint gates, shaped `[E, B]`.
+    pub gate_u_edge: Option<Array2<Scalar>>,
+    /// Optional learned v-endpoint gates, shaped `[E, B]`.
+    pub gate_v_edge: Option<Array2<Scalar>>,
+    /// Optional per-edge residual mask, applied exactly once.
+    pub edge_mask: Option<Vec<Scalar>>,
 }
 
 /// Effective map applied to one endpoint: `(R + scale gate A B^T) z_e`.
 /// Factored — two rank-r matvecs; the gate multiplies the low-rank term.
 fn apply_endpoint(
-    r_base: ArrayView2<Scalar>,  // [d_e, d_v]
-    a: ArrayView2<Scalar>,       // [d_e, r]
-    b: ArrayView2<Scalar>,       // [d_v, r]
+    r_base: ArrayView2<Scalar>, // [d_e, d_v]
+    a: ArrayView2<Scalar>,      // [d_e, r]
+    b: ArrayView2<Scalar>,      // [d_v, r]
     gate: Option<Scalar>,
-    z_e: ArrayView1<Scalar>,     // [d_v]
+    z_e: ArrayView1<Scalar>, // [d_v]
     scale: Scalar,
 ) -> Array1<Scalar> {
     let rz = r_base.dot(&z_e); // [d_e]
@@ -59,11 +68,11 @@ fn apply_endpoint(
 /// Adjoint of `apply_endpoint`: `(R + scale gate A B^T)^T r`.
 /// The gate multiplies the `A^T r` side (lora.py `_adjoint_endpoint`).
 fn adjoint_endpoint(
-    r_base: ArrayView2<Scalar>,  // [d_e, d_v]
-    a: ArrayView2<Scalar>,       // [d_e, r]
-    b: ArrayView2<Scalar>,       // [d_v, r]
+    r_base: ArrayView2<Scalar>, // [d_e, d_v]
+    a: ArrayView2<Scalar>,      // [d_e, r]
+    b: ArrayView2<Scalar>,      // [d_v, r]
     gate: Option<Scalar>,
-    r_e: ArrayView1<Scalar>,     // [d_e]
+    r_e: ArrayView1<Scalar>, // [d_e]
     scale: Scalar,
 ) -> Array1<Scalar> {
     let contrib = r_base.t().dot(&r_e); // [d_v]
@@ -114,10 +123,14 @@ impl LoraGeometry {
             let (u, v) = (u as usize, v as usize);
             let su = graph.dir_uv[ei] as usize;
             let sv = graph.dir_vu[ei] as usize;
-            a_u.slice_mut(s![ei, .., .., ..]).assign(&a.slice(s![u, .., su, .., ..]));
-            a_v.slice_mut(s![ei, .., .., ..]).assign(&a.slice(s![v, .., sv, .., ..]));
-            b_u.slice_mut(s![ei, .., .., ..]).assign(&b.slice(s![u, .., su, .., ..]));
-            b_v.slice_mut(s![ei, .., .., ..]).assign(&b.slice(s![v, .., sv, .., ..]));
+            a_u.slice_mut(s![ei, .., .., ..])
+                .assign(&a.slice(s![u, .., su, .., ..]));
+            a_v.slice_mut(s![ei, .., .., ..])
+                .assign(&a.slice(s![v, .., sv, .., ..]));
+            b_u.slice_mut(s![ei, .., .., ..])
+                .assign(&b.slice(s![u, .., su, .., ..]));
+            b_v.slice_mut(s![ei, .., .., ..])
+                .assign(&b.slice(s![v, .., sv, .., ..]));
             if let Some(g) = gate {
                 let gu = g_u.as_mut().unwrap();
                 let gv = g_v.as_mut().unwrap();

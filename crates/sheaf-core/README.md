@@ -14,9 +14,14 @@ This is a parity-faithful port of the forward path of
 layer-by-layer and per-iteration against golden traces from the reference
 implementation.
 
+The release-qualified artifact is the fp32 maze inference path. The public
+`Scalar` alias is intentionally fixed to `f32`; Cargo features do not change
+public type identity. See the workspace roadmap for the qualification status
+of the MNIST and Sudoku scaffolding.
+
 Part of the [sheaf-rs](https://github.com/MonumentalSystems/sheaf-rs)
 workspace: `sheaf-nn` provides the neural encoders/decoders and full model,
 `sheaf-io` provides weight/fixture loading and data views.
 
-Licensed Apache-2.0. Derived from sheaf-admm (Apache-2.0); see the
-repository NOTICE for attribution.
+Licensed Apache-2.0. Derived from sheaf-admm (Apache-2.0); the crate archive
+includes `LICENSE` and `NOTICE`.

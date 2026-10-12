@@ -14,8 +14,12 @@ Parity-faithful port of
 golden traces from the reference implementation. Training stays in the JAX
 reference; weights are exported to safetensors and loaded via `sheaf-io`.
 
+The release-qualified artifact is the maze inference path. MNIST and Sudoku
+types are available for integration work but do not yet ship trained release
+weights or task-specific golden parity suites.
+
 Part of the [sheaf-rs](https://github.com/MonumentalSystems/sheaf-rs)
 workspace.
 
-Licensed Apache-2.0. Derived from sheaf-admm (Apache-2.0); see the
-repository NOTICE for attribution.
+Licensed Apache-2.0. Derived from sheaf-admm (Apache-2.0); the crate archive
+includes `LICENSE` and `NOTICE`.

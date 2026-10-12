@@ -12,7 +12,9 @@ use crate::Scalar;
 /// Endpoint of an edge (which slot of the `[E, 2, ...]` axis).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Endpoint {
+    /// The first (`u`) endpoint in an oriented edge pair.
     U = 0,
+    /// The second (`v`) endpoint in an oriented edge pair.
     V = 1,
 }
 
@@ -23,8 +25,10 @@ pub enum Endpoint {
 /// JAX `at[u].add(contrib_u)` / `at[v].add(-contrib_v)` pair).
 #[derive(Debug, Clone)]
 pub struct NodeIncidence {
-    pub offsets: Vec<u32>,             // [N + 1]
-    pub entries: Vec<(u32, Endpoint)>, // edge id, endpoint
+    /// CSR offsets of length `N + 1` into [`Self::entries`].
+    pub offsets: Vec<u32>,
+    /// Incident `(edge id, endpoint)` pairs grouped by node.
+    pub entries: Vec<(u32, Endpoint)>,
 }
 
 impl NodeIncidence {
@@ -88,7 +92,11 @@ impl AgentGraph {
         node_positions: Array2<Scalar>,
         num_directions: usize,
     ) -> Self {
-        assert_eq!(node_positions.ncols(), 2, "node_positions must be [N, 2] (y, x)");
+        assert_eq!(
+            node_positions.ncols(),
+            2,
+            "node_positions must be [N, 2] (y, x)"
+        );
         let num_nodes = node_positions.nrows();
         let mut dir_uv = Vec::with_capacity(edges.len());
         let mut dir_vu = Vec::with_capacity(edges.len());
@@ -127,6 +135,7 @@ impl AgentGraph {
         }
     }
 
+    /// Returns the number of oriented edge records in the graph.
     pub fn num_edges(&self) -> usize {
         self.edges.len()
     }

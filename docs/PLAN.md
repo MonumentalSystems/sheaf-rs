@@ -30,8 +30,8 @@ sheaf-rs/
 ├─ crates/
 │  ├─ sheaf-core/                  # ADMM + sheaf linear algebra. ndarray only.
 │  │  │                            # wasm-safe: no threads by default; `parallel`
-│  │  │                            # feature gates rayon; `f64` feature for the
-│  │  │                            # reference-precision build.
+│  │  │                            # feature gates rayon; public inference
+│  │  │                            # scalar is fixed to the fp32 parity contract.
 │  │  ├─ src/tensor.rs             # aliases: NodeState = Array3<f32> [N,B,d_v],
 │  │  │                            #          EdgeState = Array3<f32> [E,B,d_e]
 │  │  ├─ src/ops.rs                # thin tensor-ops facade (all gemm/gather/scatter
@@ -178,7 +178,7 @@ pub struct AdmmState { pub x: NodeState, pub z: NodeState, pub y: NodeState }
 - Exact epsilons: CG denom **1e-8**, project Tikhonov **1e-5**, consistency_rms **1e-6 under the sqrt**, RMSNorm/LayerNorm **1e-6**, **q_epsilon 1e-4** added to every softplus q_diag head (§3.2).
 - GELU is the **tanh approximation** (Flax default), softplus is the stable `max(x,0) + log1p(exp(−|x|))` form, `inverse_softplus` clamps ≥1e-7 and is identity above 20.
 - Flax Dense kernels are stored **[in, out]** (`y = x·W + b`) — the loader must not transpose.
-- A `--features f64` build of sheaf-core exists solely to disambiguate roundoff from bugs during parity debugging.
+- `Scalar` is fixed to f32 in the public crates. Precision-changing Cargo features are deliberately excluded because feature unification must remain additive; high-precision diagnostics use isolated reference calculations instead.
 
 ### 3.5 Models & views
 
@@ -224,7 +224,7 @@ Three layers, all runnable in CI (`parity_check` bin replays goldens).
 **5.2 Golden .npz fixtures from Python** (do **not** replicate `jax.random` — dump values instead):
 - `tools/export_weights.py`: Flax pickle → safetensors. Exports **both `params` and `ema_params`** (the visualizer and eval use EMA by default — a judged concern; the Rust loader defaults to EMA). Bakes offset-softplus scalars using each config's init constants (inference path only; see §3.5/§4). Asserts an **exhaustive expected-key manifest per config** (Burn's graft) so upstream renames fail loudly, not silently.
 - `tools/dump_goldens.py`: for fixed inputs per task config, dumps every encoder head output, assembled restriction maps, per-iteration ADMM state + residuals via `coordinate_history`, and final logits — the same data the demo renders, so parity tests double as demo-correctness tests.
-- Rust asserts **layer-by-layer** at every module boundary (catches transposed [in,out] kernels, the misplaced Sudoku scale factor, a dropped q_epsilon) and **per-iteration trajectory** with a **widening tolerance schedule** (start ~1e-5 rel at iter 1; f32 CG accumulation-order drift compounds over 100 iters). Any divergence is triaged with the `f64` build: if f64 agrees, it's roundoff; if not, it's a bug.
+- Rust asserts **layer-by-layer** at every module boundary (catches transposed [in,out] kernels, the misplaced Sudoku scale factor, a dropped q_epsilon) and **per-iteration trajectory** with a **widening tolerance schedule** (start ~1e-5 rel at iter 1; f32 CG accumulation-order drift compounds over 100 iters). Divergence is triaged with isolated f64 reference calculations and the exported JAX traces, without changing the published API's scalar type.
 - End acceptance: eval metrics (maze solved/cell_acc incl. OOD splits, mnist acc, sudoku cell/solved/completion) match Python eval on a fixed exported batch to **< 0.1%**, replicating the eval quirks exactly: unweighted per-batch metric means; maze `solved` compares only the PATH_TOKEN=5 mask; **MNIST prediction is the argmax of the *mean of per-agent softmax* over the N agents — not mean logits** (averaging logits is near-identical but not identical and would surface as a sub-0.1% flaky parity failure); sudoku completion is scored on empty cells.
 
 **5.3 Gradient goldens (Tier 3 only):** `jax.grad` parameter-gradient dumps on the mini config (`rho_learnable=false`), with kink-placed inputs, rtol 1e-3 f32.
@@ -271,7 +271,7 @@ Small pre-exported `.npz` test bundles (a few mazes per split, one sudoku batch,
 | **M2** | `sheaf-core`: graph (+precomputed direction/slot tables), FixedGeometry + LoraGeometry, all four geometry ops, diagonal-prox/simple x-solvers (incl. q_epsilon floor), unrolled CG (project + prox, legacy init), `run_admm`/`run_admm_history` | 1.5 wk | All §5.1 property tests pass; per-iteration golden parity on a tiny fixed-seed problem over 12 iters (~1e-5) |
 | **M3** | Maze path end-to-end: `layers.rs` (tanh-GELU, RMSNorm 1e-6, softplus heads), MLPEncoderV2 + l1box_diag + LoRA heads, ConcatMLPDecoderV2, directional map assembly, views port + `mazegen.rs`, reassembly | 1.5 wk | **First demo-able point.** Maze eval matches JAX to <0.1% at K_eval=100 incl. all OOD splits (37×37, 73×73); layer-by-layer goldens pass; mazegen property tests green |
 | **M4** | MNIST + Sudoku paths: residual MLPEncoder + classification decoder (lasso, z_mode=project, mean-of-softmax prediction), Sudoku Mixer encoder (SwiGLU, scale-after-pos-embed, contiguous cell blocks), sudoku sharing + sudoku-LoRA gather, SudokuDecoder | 1.5 wk | Same parity exit criteria per config, incl. sudoku_sheaf_lora (flagged as the fiddliest third — extra golden density here) |
-| **M5** | Native demos + perf: maze_demo TUI + GIF, sudoku_demo, `viz_export` (heatmap + PCA phase portrait), rayon batch parallelism, optional faer feature, `f64` build, `parity_check` in CI | 1 wk | ≥30 ADMM iters/sec rendered on a laptop for a 4× (73×73) OOD maze; demo `--ci` assertions green on shipped bundles |
+| **M5** | Native demos + perf: maze_demo TUI + GIF, sudoku_demo, `viz_export` (heatmap + PCA phase portrait), rayon batch parallelism, isolated f64 diagnostics, `parity_check` in CI | 1 wk | ≥30 ADMM iters/sec rendered on a laptop for a 4× (73×73) OOD maze; demo `--ci` assertions green on shipped bundles |
 | **M6** | WASM demo: forward-only wasm build, f16 embedded EMA weights, canvas UI (editor with solvability check, animation, hover inspection, residual charts, OOD buttons), shared mazegen, GIF capture; README with architecture walkthrough, explicit non-goals (MPNN baseline; viz superseded), + side-by-side JAX/Rust excerpts | 1.5 wk | <2 MB wasm, smooth animation on a 2020 laptop, deployed to Pages |
 | **M7** *(optional)* | `sheaf-grad`: hand-derived reverse sweep for the mini-MNIST config (ρ frozen; CG checkpoint+recompute) per §4 Tier 3; unbaked scalar reparameterization where trained; AdamW-lite + EMA loop | +2 wk | Gradcheck ladder green incl. on-kink fixtures; Rust-trained mini config within ~1% of the *same* config trained in JAX (not a paper-parity claim) |
 
@@ -283,7 +283,7 @@ Small pre-exported `.npz` test bundles (a few mazes per split, one sudoku batch,
 
 | Risk | Likelihood / impact | Mitigation |
 |---|---|---|
-| **Numeric drift over the unroll** (100 ADMM × 5 CG iters compound f32 reduction-order differences) → phantom parity failures burn time | High / Medium | Widening tolerance schedule; `f64` reference build to classify roundoff vs bug; end acceptance on eval **metrics**, never bitwise; all ops via `ops.rs` so accumulation order is controllable |
+| **Numeric drift over the unroll** (100 ADMM × 5 CG iters compound f32 reduction-order differences) → phantom parity failures burn time | High / Medium | Widening tolerance schedule; isolated f64 calculations and JAX traces to classify roundoff vs bug; end acceptance on eval **metrics**, never bitwise; all ops via `ops.rs` so accumulation order is controllable |
 | **Checkpoint format coupling**: pickled Flax pytree names follow `nn.compact` module naming; upstream refactor silently breaks the name-map | Medium / High | Exhaustive expected-key manifest per config asserted at export; layer-by-layer activation parity catches survivors; exporter lives in *our* repo and pins the upstream commit |
 | **Sudoku/LoRA transcription bugs**: Mixer encoder, dir_uv/dir_vu and map_u/map_v slot asymmetry, gate placement — off-by-one magnets | High / Medium | Densest golden coverage on M4; slot tables unit-tested against dumps; LoRA-with-B=0 == Fixed identity test; hardcoded 243-edge const table cross-checked against the Python builder |
 | **Semantics visible only in code**: prox_init legacy default, project-mode non-idempotent warm start, over-relaxation ordering, CG eps 1e-8, q_epsilon 1e-4, α==1.0 fast path | Medium / High | Line-by-line transcription of `admm.py`/`unrolled_cg.py` with cross-referenced comments; §3.4 numerics contract enforced by tests; explicitly do **not** "fix" the non-idempotent projector |

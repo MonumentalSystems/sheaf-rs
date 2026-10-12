@@ -1,0 +1,9 @@
+sheaf-rs
+Copyright 2026 Monumental Systems
+
+This project is a Rust port of, and contains algorithms and design derived
+from, sheaf-admm (https://github.com/SakanaAI/sheaf-admm), Copyright Sakana AI
+(authors: Jeffrey Seely, Bartłomiej Cupiał, Llion Jones), licensed under the
+Apache License 2.0. The golden test fixtures under goldens/ were generated
+with that library. Reference: "Learning Multi-Agent Coordination via
+Sheaf-ADMM" (ICML 2026, arXiv:2605.31005).

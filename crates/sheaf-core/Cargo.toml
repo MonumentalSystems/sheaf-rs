@@ -2,6 +2,7 @@
 name = "sheaf-core"
 version.workspace = true
 edition.workspace = true
+rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
 readme = "README.md"
@@ -12,9 +13,6 @@ default = []
 # rayon over the batch axis (numerically identical; default OFF keeps the crate
 # single-threaded and wasm-safe — no rayon compiled in unless enabled).
 parallel = ["dep:rayon"]
-# Reference-precision build: routes the crate's scalar float type to f64 solely
-# to disambiguate roundoff from bugs during parity debugging (PLAN.md §3.4).
-f64 = []
 
 [dependencies]
 ndarray = { workspace = true }

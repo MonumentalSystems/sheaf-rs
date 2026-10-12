@@ -3,6 +3,7 @@
 //!
 //! Ports `sheaf_admm.data.{views,build_maze}` plus the loader side of
 //! `tools/export_weights.py`. Golden fixture layout: goldens/CONTRACT.md.
+#![deny(missing_docs)]
 
 pub mod mazegen;
 pub mod npz;

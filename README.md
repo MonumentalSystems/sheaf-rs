@@ -2,7 +2,10 @@
 
 A Rust port of [SakanaAI/sheaf-admm](https://github.com/SakanaAI/sheaf-admm) —
 inference-first, parity-tested layer-by-layer against golden traces exported
-from the JAX reference. See [docs/PLAN.md](docs/PLAN.md) for the full design.
+from the JAX reference for the [ICML 2026 Sheaf-ADMM
+paper](https://proceedings.mlr.press/v306/seely26a.html). See
+[docs/PLAN.md](docs/PLAN.md) for the full design. The minimum supported Rust
+version is **1.84**.
 
 ## What this is
 
@@ -29,7 +32,7 @@ cargo run --release -p sheaf-demo --bin maze_demo -- --maze-from-batch --k 12
 # on any divergence).
 cargo run --release -p sheaf-demo --bin parity_check
 
-cargo test --workspace
+cargo test --workspace --all-targets --all-features --locked
 ```
 
 `maze_demo` flags: `--weights` / `--config` (default `goldens/maze/...`),
@@ -82,13 +85,16 @@ prediction grid (exact).
 
 ## Scope / non-goals
 
-**Maze task only** (`configs/experiment/maze_sheaf.yaml`): MLPEncoderV2,
+The **release-qualified artifact is the maze task**
+(`configs/experiment/maze_sheaf.yaml`): MLPEncoderV2,
 l1box_diag objective, LoRA rank-4 directional geometry (8-way),
 ConcatMLPDecoderV2, prox-mode unrolled CG (T=5), d_v=10, d_e=5.
-MNIST, sudoku, the MPNN baseline, and **training** are out of scope —
-training stays in Python; this repo consumes exported weights
-(`weights.safetensors`, EMA collection by default) and golden fixtures whose
-exact layout is pinned in `goldens/CONTRACT.md`.
+MNIST and Sudoku inference code paths are present as scaffolding but do not yet
+ship trained release weights or task-specific golden parity suites; they must
+not be treated as validated model releases. The MPNN baseline and **training**
+remain out of scope—training stays in Python; this repo consumes exported
+weights (`weights.safetensors`, EMA collection by default) and golden fixtures
+whose exact layout is pinned in `goldens/CONTRACT.md`.
 
 ## Layout
 
@@ -160,10 +166,11 @@ cargo test -p sheaf-web
 ## Releasing
 
 Pushing a `v*` tag runs `.github/workflows/release.yml`, which gates on the
-workspace tests and the golden `parity_check` binary (the release fails if
-either fails), then publishes `sheaf-core` -> `sheaf-nn` -> `sheaf-io` to
-crates.io in dependency order and attaches the browser-demo bundle to the
-GitHub release.
+all-target/all-feature workspace tests, strict public API docs, package archive
+validation, and the golden `parity_check` binary. It then dry-runs and publishes
+`sheaf-core` -> `sheaf-nn` -> `sheaf-io` to crates.io in dependency order and
+attaches the browser-demo bundle to the GitHub release. Every published archive
+contains its own `LICENSE` and `NOTICE`.
 
 Publishing authenticates via crates.io **Trusted Publishing (OIDC)** using
 [`rust-lang/crates-io-auth-action`](https://github.com/rust-lang/crates-io-auth-action);

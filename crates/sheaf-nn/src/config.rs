@@ -26,10 +26,14 @@ fn default_lora_alpha() -> f32 {
 #[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ModelConfig {
-    pub num_classes: usize,      // maze 6 / mnist 10 / sudoku 10 (OUTPUT classes)
-    pub d_v: usize,              // maze 10 / mnist 32 / sudoku 288
-    pub d_e: usize,              // maze 5 / mnist 24 / sudoku 32
-    pub encoder_arch: String,    // "mlp_v2" (maze) | "mlp" (mnist) | "sudoku"
+    /// Number of task output classes.
+    pub num_classes: usize,
+    /// Node-stalk dimension.
+    pub d_v: usize,
+    /// Edge-stalk dimension.
+    pub d_e: usize,
+    /// Encoder architecture identifier.
+    pub encoder_arch: String,
     /// mlp_v2 / mlp hidden width (256). Absent from the sudoku config (which
     /// uses `enc_d_model`), so it carries a serde default.
     #[serde(default)]
@@ -40,43 +44,66 @@ pub struct ModelConfig {
     /// sudoku number of Mixer blocks (2). Absent from maze/mnist.
     #[serde(default)]
     pub enc_num_blocks: usize,
-    pub comm_norm_type: String,  // "layernorm"
-    pub objective_mode: String,  // "l1box_diag" (maze) | "lasso" (mnist) | "non_negative" (sudoku)
-    pub x_solver: String,        // "diagonal_prox"
-    pub z_solver: String,        // "unrolled_cg"
-    pub z_mode: String,          // "prox" (maze/sudoku) | "project" (mnist)
+    /// Normalization used by the communication head.
+    pub comm_norm_type: String,
+    /// Local objective family emitted by the encoder.
+    pub objective_mode: String,
+    /// Local x-solver identifier.
+    pub x_solver: String,
+    /// Consensus z-solver identifier.
+    pub z_solver: String,
+    /// Consensus mode: soft `prox` or hard `project`.
+    pub z_mode: String,
     #[serde(default)]
-    pub gamma: f32, // maze 5.0 / sudoku 2.0; unused by project-mode mnist
-    pub cg_iters: usize, // 5
+    /// Soft-consensus Laplacian weight.
+    pub gamma: f32,
+    /// Fixed number of conjugate-gradient iterations.
+    pub cg_iters: usize,
     /// project-mode `L + eps*I` Tikhonov term. Unused by prox mode (maze/sudoku),
     /// so it carries a serde default for configs that omit it.
     #[serde(default)]
     pub tikhonov_eps: f32, // 1e-5
     #[serde(default)]
-    pub prox_init: String, // "legacy" (maze); unused by mnist inference
-    pub rm_sharing: String,      // "directional" (maze) | "global" (mnist)
-    pub rm_init: String,         // "orthonormal"
-    pub rm_mode: String,         // "context" (LoRA)
-    pub lora_rank: usize,        // maze 4 / mnist 8
+    /// Proximal-solver initialization convention.
+    pub prox_init: String,
+    /// Restriction-map sharing scheme.
+    pub rm_sharing: String,
+    /// Restriction-map initializer recorded by the exporter.
+    pub rm_init: String,
+    /// Fixed or context-dependent restriction-map mode.
+    pub rm_mode: String,
+    /// Rank of context-dependent LoRA updates.
+    pub lora_rank: usize,
     #[serde(default = "default_lora_alpha")]
-    pub lora_alpha: f32, // 1.0
+    /// LoRA scaling numerator.
+    pub lora_alpha: f32,
     #[serde(default)]
-    pub lora_use_gate: bool, // false
-    pub lora_init_style: String, // "standard" (maze) | "legacy" (mnist); TRAIN-only, no fwd effect
-    pub num_directions: usize,   // 8 (LoRA slots are direction-indexed on both tasks)
-    pub relaxation_alpha: f32,   // 1.0
-    pub z_init: String,          // "h"
-    pub q_epsilon: f32,          // 1e-4
+    /// Whether the exported LoRA factors include learned gates.
+    pub lora_use_gate: bool,
+    /// Training-time LoRA initialization convention.
+    pub lora_init_style: String,
+    /// Number of direction or cell slots used by restriction maps.
+    pub num_directions: usize,
+    /// ADMM over-relaxation factor.
+    pub relaxation_alpha: f32,
+    /// Initial-consensus source, normally encoder state `h`.
+    pub z_init: String,
+    /// Positive floor added to quadratic curvatures.
+    pub q_epsilon: f32,
     #[serde(default)]
-    pub l1_init: f32, // maze 0.01 (per-dim l1box head init)
+    /// Training initializer for the maze L1 head.
+    pub l1_init: f32,
     #[serde(default)]
-    pub upper_init: f32, // maze 1.0 (per-dim box upper init)
+    /// Training initializer for the maze upper-bound head.
+    pub upper_init: f32,
     /// mnist `lasso` scalar L1 weight (config, NOT learned). Absent for maze.
     #[serde(default)]
     pub l1_weight: Option<f32>,
-    pub decoder_arch: String, // "mlp_concat_v2" (maze) | "classification" (mnist) | "sudoku"
+    /// Decoder architecture identifier.
+    pub decoder_arch: String,
     #[serde(default)]
-    pub dec_hidden_dim: usize, // maze 256 (mlp_concat_v2 hidden)
+    /// Scalar decoder hidden width used by the maze MLP.
+    pub dec_hidden_dim: usize,
     /// sudoku / classification decoder hidden dims (`[256]` for sudoku). Absent
     /// for maze (which uses the scalar `dec_hidden_dim`).
     #[serde(default)]
@@ -95,8 +122,11 @@ pub struct ModelConfig {
 #[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ExportedConfig {
+    /// Model architecture and solver settings.
     pub model: ModelConfig,
+    /// Task and data-view settings.
     pub task: TaskConfig,
+    /// Learned scalar values evaluated by the exporter.
     pub baked: BakedScalars,
     /// Optional exporter provenance flag: `Some(true)` iff the checkpoint was
     /// trained (`export_weights.py --checkpoint`). Absent in random-init
@@ -111,16 +141,24 @@ pub struct ExportedConfig {
     pub training: Option<serde_json::Value>,
 }
 
+/// Task-specific data-view and evaluation settings.
 #[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct TaskConfig {
-    pub task: String,          // "maze"
-    pub patch_size: usize,     // 3
-    pub stride: usize,         // 2
-    pub connectivity: usize,   // 8
-    pub num_classes: usize,    // 6 (input token classes)
-    pub k_eval: usize,         // 100
-    pub loss_window: usize,    // 4 (training detail; goldens decode per-iter x)
+    /// Task identifier (`maze`, `mnist`, or `sudoku`).
+    pub task: String,
+    /// Spatial patch side length for grid tasks.
+    pub patch_size: usize,
+    /// Patch-extraction stride for grid tasks.
+    pub stride: usize,
+    /// Grid connectivity used to build the agent graph.
+    pub connectivity: usize,
+    /// Number of input token classes.
+    pub num_classes: usize,
+    /// Number of ADMM iterations used for evaluation.
+    pub k_eval: usize,
+    /// Number of final training iterates decoded for the loss.
+    pub loss_window: usize,
 }
 
 /// Scalars baked from their offset-softplus reparameterization at export time.
@@ -148,62 +186,193 @@ impl ExportedConfig {
         use anyhow::ensure;
         let m = &self.model;
         // ---- task-agnostic invariants (both scopes share these) ----
-        ensure!(m.x_solver == "diagonal_prox", "unsupported x_solver {:?}", m.x_solver);
-        ensure!(m.z_solver == "unrolled_cg", "unsupported z_solver {:?}", m.z_solver);
-        ensure!(m.z_mode == "prox" || m.z_mode == "project", "unknown z_mode {:?}", m.z_mode);
-        ensure!(m.rm_mode == "context" || m.rm_mode == "fixed", "unknown rm_mode {:?}", m.rm_mode);
+        ensure!(
+            m.x_solver == "diagonal_prox",
+            "unsupported x_solver {:?}",
+            m.x_solver
+        );
+        ensure!(
+            m.z_solver == "unrolled_cg",
+            "unsupported z_solver {:?}",
+            m.z_solver
+        );
+        ensure!(
+            m.z_mode == "prox" || m.z_mode == "project",
+            "unknown z_mode {:?}",
+            m.z_mode
+        );
+        ensure!(
+            m.rm_mode == "context" || m.rm_mode == "fixed",
+            "unknown rm_mode {:?}",
+            m.rm_mode
+        );
         // 4/8 for grid tasks, 9 for sudoku cell-slots (per-task arm pins the exact value).
         ensure!(
             m.num_directions == 4 || m.num_directions == 8 || m.num_directions == 9,
             "num_directions must be 4, 8, or 9, got {}",
             m.num_directions
         );
-        ensure!(!m.lora_use_gate, "lora_use_gate is not shipped by any config (descoped)");
-        ensure!(m.z_init == "h" || m.z_init == "zeros", "unknown z_init {:?}", m.z_init);
-        ensure!(m.comm_norm_type == "layernorm", "unsupported comm_norm_type {:?}", m.comm_norm_type);
+        ensure!(
+            !m.lora_use_gate,
+            "lora_use_gate is not shipped by any config (descoped)"
+        );
+        ensure!(
+            m.z_init == "h" || m.z_init == "zeros",
+            "unknown z_init {:?}",
+            m.z_init
+        );
+        ensure!(
+            m.comm_norm_type == "layernorm",
+            "unsupported comm_norm_type {:?}",
+            m.comm_norm_type
+        );
         // rm_init is task-dispatched below (orthonormal for grid tasks, soft_slice for sudoku).
         ensure!(m.lora_rank > 0, "lora_rank must be positive");
         ensure!(m.d_v > 0 && m.d_e > 0, "stalk dims must be positive");
         ensure!(m.cg_iters > 0, "cg_iters must be positive");
         ensure!(m.q_epsilon > 0.0, "q_epsilon must be positive");
-        ensure!(self.task.patch_size % 2 == 1, "patch_size must be odd (center-indexed patches)");
-        ensure!(self.baked.rho > 0.0 && self.baked.rho.is_finite(), "baked rho must be a positive finite float");
+        ensure!(
+            self.task.patch_size % 2 == 1,
+            "patch_size must be odd (center-indexed patches)"
+        );
+        ensure!(
+            self.baked.rho > 0.0 && self.baked.rho.is_finite(),
+            "baked rho must be a positive finite float"
+        );
 
         // ---- task-dispatched scope guards (each stays strict) ----
         match self.task.task.as_str() {
             "maze" => {
-                ensure!(m.encoder_arch == "mlp_v2", "unsupported encoder_arch {:?} (maze scope: mlp_v2)", m.encoder_arch);
-                ensure!(m.decoder_arch == "mlp_concat_v2", "unsupported decoder_arch {:?} (maze scope)", m.decoder_arch);
-                ensure!(m.objective_mode == "l1box_diag", "unsupported objective_mode {:?} (maze scope)", m.objective_mode);
-                ensure!(m.rm_sharing == "directional", "unsupported rm_sharing {:?} (maze scope)", m.rm_sharing);
-                ensure!(m.rm_init == "orthonormal", "unsupported rm_init {:?} (maze scope: orthonormal)", m.rm_init);
-                ensure!(m.num_directions == 4 || m.num_directions == 8, "maze num_directions must be 4 or 8");
-                ensure!(m.prox_init == "legacy", "unsupported prox_init {:?} ('warm' is training-only, dropped)", m.prox_init);
+                ensure!(
+                    m.encoder_arch == "mlp_v2",
+                    "unsupported encoder_arch {:?} (maze scope: mlp_v2)",
+                    m.encoder_arch
+                );
+                ensure!(
+                    m.decoder_arch == "mlp_concat_v2",
+                    "unsupported decoder_arch {:?} (maze scope)",
+                    m.decoder_arch
+                );
+                ensure!(
+                    m.objective_mode == "l1box_diag",
+                    "unsupported objective_mode {:?} (maze scope)",
+                    m.objective_mode
+                );
+                ensure!(
+                    m.rm_sharing == "directional",
+                    "unsupported rm_sharing {:?} (maze scope)",
+                    m.rm_sharing
+                );
+                ensure!(
+                    m.rm_init == "orthonormal",
+                    "unsupported rm_init {:?} (maze scope: orthonormal)",
+                    m.rm_init
+                );
+                ensure!(
+                    m.num_directions == 4 || m.num_directions == 8,
+                    "maze num_directions must be 4 or 8"
+                );
+                ensure!(
+                    m.prox_init == "legacy",
+                    "unsupported prox_init {:?} ('warm' is training-only, dropped)",
+                    m.prox_init
+                );
                 ensure!(m.gamma > 0.0, "maze gamma must be positive");
             }
             "sudoku" => {
-                ensure!(m.encoder_arch == "sudoku", "unsupported encoder_arch {:?} (sudoku scope: sudoku)", m.encoder_arch);
-                ensure!(m.decoder_arch == "sudoku", "unsupported decoder_arch {:?} (sudoku scope: sudoku)", m.decoder_arch);
-                ensure!(m.objective_mode == "non_negative", "unsupported objective_mode {:?} (sudoku scope: non_negative)", m.objective_mode);
-                ensure!(m.rm_sharing == "sudoku", "unsupported rm_sharing {:?} (sudoku scope: sudoku)", m.rm_sharing);
-                ensure!(m.rm_init == "soft_slice", "unsupported rm_init {:?} (sudoku scope: soft_slice)", m.rm_init);
-                ensure!(m.num_directions == 9, "sudoku num_directions must be 9 (cell-slots), got {}", m.num_directions);
-                ensure!(m.z_mode == "prox", "sudoku uses soft-consensus z_mode=prox, got {:?}", m.z_mode);
+                ensure!(
+                    m.encoder_arch == "sudoku",
+                    "unsupported encoder_arch {:?} (sudoku scope: sudoku)",
+                    m.encoder_arch
+                );
+                ensure!(
+                    m.decoder_arch == "sudoku",
+                    "unsupported decoder_arch {:?} (sudoku scope: sudoku)",
+                    m.decoder_arch
+                );
+                ensure!(
+                    m.objective_mode == "non_negative",
+                    "unsupported objective_mode {:?} (sudoku scope: non_negative)",
+                    m.objective_mode
+                );
+                ensure!(
+                    m.rm_sharing == "sudoku",
+                    "unsupported rm_sharing {:?} (sudoku scope: sudoku)",
+                    m.rm_sharing
+                );
+                ensure!(
+                    m.rm_init == "soft_slice",
+                    "unsupported rm_init {:?} (sudoku scope: soft_slice)",
+                    m.rm_init
+                );
+                ensure!(
+                    m.num_directions == 9,
+                    "sudoku num_directions must be 9 (cell-slots), got {}",
+                    m.num_directions
+                );
+                ensure!(
+                    m.z_mode == "prox",
+                    "sudoku uses soft-consensus z_mode=prox, got {:?}",
+                    m.z_mode
+                );
                 ensure!(m.gamma > 0.0, "sudoku gamma must be positive");
-                ensure!(m.d_v.is_multiple_of(9), "sudoku d_v must be divisible by 9 (contiguous cell blocks), got {}", m.d_v);
-                ensure!(9 * m.d_e <= m.d_v, "sudoku soft_slice needs 9*d_e <= d_v (got 9*{}={} > {})", m.d_e, 9 * m.d_e, m.d_v);
+                ensure!(
+                    m.d_v % 9 == 0,
+                    "sudoku d_v must be divisible by 9 (contiguous cell blocks), got {}",
+                    m.d_v
+                );
+                ensure!(
+                    9 * m.d_e <= m.d_v,
+                    "sudoku soft_slice needs 9*d_e <= d_v (got 9*{}={} > {})",
+                    m.d_e,
+                    9 * m.d_e,
+                    m.d_v
+                );
                 ensure!(m.enc_d_model > 0, "sudoku enc_d_model must be positive");
-                ensure!(m.enc_num_blocks > 0, "sudoku enc_num_blocks must be positive");
-                ensure!(!m.dec_hidden_dims.is_empty(), "sudoku dec_hidden_dims must be non-empty");
+                ensure!(
+                    m.enc_num_blocks > 0,
+                    "sudoku enc_num_blocks must be positive"
+                );
+                ensure!(
+                    !m.dec_hidden_dims.is_empty(),
+                    "sudoku dec_hidden_dims must be non-empty"
+                );
             }
             "mnist" => {
-                ensure!(m.encoder_arch == "mlp", "unsupported encoder_arch {:?} (mnist scope: mlp)", m.encoder_arch);
-                ensure!(m.decoder_arch == "classification", "unsupported decoder_arch {:?} (mnist scope: classification)", m.decoder_arch);
-                ensure!(m.objective_mode == "lasso", "unsupported objective_mode {:?} (mnist scope: lasso)", m.objective_mode);
-                ensure!(m.rm_sharing == "global", "unsupported rm_sharing {:?} (mnist scope: global)", m.rm_sharing);
-                ensure!(m.rm_init == "orthonormal", "unsupported rm_init {:?} (mnist scope: orthonormal)", m.rm_init);
-                ensure!(m.num_directions == 4 || m.num_directions == 8, "mnist num_directions must be 4 or 8");
-                ensure!(m.z_mode == "project", "mnist uses hard-consensus z_mode=project, got {:?}", m.z_mode);
+                ensure!(
+                    m.encoder_arch == "mlp",
+                    "unsupported encoder_arch {:?} (mnist scope: mlp)",
+                    m.encoder_arch
+                );
+                ensure!(
+                    m.decoder_arch == "classification",
+                    "unsupported decoder_arch {:?} (mnist scope: classification)",
+                    m.decoder_arch
+                );
+                ensure!(
+                    m.objective_mode == "lasso",
+                    "unsupported objective_mode {:?} (mnist scope: lasso)",
+                    m.objective_mode
+                );
+                ensure!(
+                    m.rm_sharing == "global",
+                    "unsupported rm_sharing {:?} (mnist scope: global)",
+                    m.rm_sharing
+                );
+                ensure!(
+                    m.rm_init == "orthonormal",
+                    "unsupported rm_init {:?} (mnist scope: orthonormal)",
+                    m.rm_init
+                );
+                ensure!(
+                    m.num_directions == 4 || m.num_directions == 8,
+                    "mnist num_directions must be 4 or 8"
+                );
+                ensure!(
+                    m.z_mode == "project",
+                    "mnist uses hard-consensus z_mode=project, got {:?}",
+                    m.z_mode
+                );
                 ensure!(
                     m.dec_linear_head == Some(true),
                     "mnist classification decoder requires dec_linear_head=true, got {:?}",
@@ -283,24 +452,39 @@ mod tests {
     #[test]
     fn rejects_unknown_keys() {
         let json = CONTRACT_JSON.replace(r#""rho": 0.2751"#, r#""rho": 0.2751, "eta": 0.5"#);
-        assert!(ExportedConfig::from_json(&json).is_err(), "unknown baked key must fail");
+        assert!(
+            ExportedConfig::from_json(&json).is_err(),
+            "unknown baked key must fail"
+        );
         let json = CONTRACT_JSON.replace(r#""d_v": 10,"#, r#""d_v": 10, "mystery": 1,"#);
-        assert!(ExportedConfig::from_json(&json).is_err(), "unknown model key must fail");
+        assert!(
+            ExportedConfig::from_json(&json).is_err(),
+            "unknown model key must fail"
+        );
     }
 
     #[test]
     fn rejects_out_of_scope_configs() {
         for (from, to) in [
-            (r#""objective_mode": "l1box_diag""#, r#""objective_mode": "lasso""#),
+            (
+                r#""objective_mode": "l1box_diag""#,
+                r#""objective_mode": "lasso""#,
+            ),
             (r#""prox_init": "legacy""#, r#""prox_init": "warm""#),
-            (r#""rm_sharing": "directional""#, r#""rm_sharing": "sudoku""#),
+            (
+                r#""rm_sharing": "directional""#,
+                r#""rm_sharing": "sudoku""#,
+            ),
             (r#""lora_use_gate": false"#, r#""lora_use_gate": true"#),
             (r#""num_directions": 8"#, r#""num_directions": 6"#),
             (r#""task": "maze""#, r#""task": "sudoku""#),
         ] {
             let json = CONTRACT_JSON.replace(from, to);
             assert_ne!(json, CONTRACT_JSON, "replacement {from} did not apply");
-            assert!(ExportedConfig::from_json(&json).is_err(), "must reject {to}");
+            assert!(
+                ExportedConfig::from_json(&json).is_err(),
+                "must reject {to}"
+            );
         }
     }
 
@@ -355,15 +539,27 @@ mod tests {
     fn rejects_out_of_scope_mnist_configs() {
         for (from, to) in [
             (r#""encoder_arch": "mlp""#, r#""encoder_arch": "mlp_v2""#),
-            (r#""objective_mode": "lasso""#, r#""objective_mode": "l1box_diag""#),
-            (r#""rm_sharing": "global""#, r#""rm_sharing": "directional""#),
+            (
+                r#""objective_mode": "lasso""#,
+                r#""objective_mode": "l1box_diag""#,
+            ),
+            (
+                r#""rm_sharing": "global""#,
+                r#""rm_sharing": "directional""#,
+            ),
             (r#""z_mode": "project""#, r#""z_mode": "prox""#),
             (r#""dec_linear_head": true"#, r#""dec_linear_head": false"#),
-            (r#""dec_readout_mode": "x_only""#, r#""dec_readout_mode": "concat""#),
+            (
+                r#""dec_readout_mode": "x_only""#,
+                r#""dec_readout_mode": "concat""#,
+            ),
         ] {
             let json = MNIST_JSON.replace(from, to);
             assert_ne!(json, MNIST_JSON, "replacement {from} did not apply");
-            assert!(ExportedConfig::from_json(&json).is_err(), "must reject {to}");
+            assert!(
+                ExportedConfig::from_json(&json).is_err(),
+                "must reject {to}"
+            );
         }
     }
 
@@ -425,16 +621,28 @@ mod tests {
     fn rejects_out_of_scope_sudoku_configs() {
         for (from, to) in [
             (r#""encoder_arch": "sudoku""#, r#""encoder_arch": "mlp""#),
-            (r#""decoder_arch": "sudoku""#, r#""decoder_arch": "classification""#),
-            (r#""objective_mode": "non_negative""#, r#""objective_mode": "lasso""#),
-            (r#""rm_sharing": "sudoku""#, r#""rm_sharing": "directional""#),
+            (
+                r#""decoder_arch": "sudoku""#,
+                r#""decoder_arch": "classification""#,
+            ),
+            (
+                r#""objective_mode": "non_negative""#,
+                r#""objective_mode": "lasso""#,
+            ),
+            (
+                r#""rm_sharing": "sudoku""#,
+                r#""rm_sharing": "directional""#,
+            ),
             (r#""rm_init": "soft_slice""#, r#""rm_init": "orthonormal""#),
             (r#""num_directions": 9"#, r#""num_directions": 8"#),
             (r#""z_mode": "prox""#, r#""z_mode": "project""#),
         ] {
             let json = SUDOKU_JSON.replace(from, to);
             assert_ne!(json, SUDOKU_JSON, "replacement {from} did not apply");
-            assert!(ExportedConfig::from_json(&json).is_err(), "must reject {to}");
+            assert!(
+                ExportedConfig::from_json(&json).is_err(),
+                "must reject {to}"
+            );
         }
     }
 

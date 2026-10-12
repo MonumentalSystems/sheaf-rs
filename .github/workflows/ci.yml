@@ -18,14 +18,35 @@ jobs:
           components: clippy
       - uses: Swatinem/rust-cache@v2
       - name: Build
-        run: cargo build --workspace --all-targets
+        run: cargo build --workspace --all-targets --all-features --locked
       - name: Clippy
-        run: cargo clippy --workspace --all-targets -- -D warnings
+        run: cargo clippy --workspace --all-targets --all-features --locked -- -D warnings
       - name: Tests
-        run: cargo test --workspace
+        run: cargo test --workspace --all-targets --all-features --locked
+      - name: Published API docs
+        env:
+          RUSTDOCFLAGS: -D warnings
+        run: cargo doc -p sheaf-core -p sheaf-nn -p sheaf-io --all-features --no-deps --locked
       - name: Golden parity vs JAX reference
         run: cargo run --release -p sheaf-demo --bin parity_check
       - name: Demo smoke run
         run: cargo run --release -p sheaf-demo --bin maze_demo -- --no-anim --k 40 --seed 7
       - name: Package check (publishable crates)
-        run: cargo package -p sheaf-core -p sheaf-io -p sheaf-nn
+        run: |
+          cargo package -p sheaf-core -p sheaf-io -p sheaf-nn --locked
+          for crate in sheaf-core sheaf-nn sheaf-io; do
+            files="$(cargo package -p "$crate" --list --locked)"
+            grep -qx LICENSE <<<"$files"
+            grep -qx NOTICE <<<"$files"
+          done
+
+  msrv:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@1.84
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: msrv
+      - name: Test minimum supported Rust version
+        run: cargo test --workspace --all-targets --all-features --locked

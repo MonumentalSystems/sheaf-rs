@@ -26,8 +26,7 @@ impl Rng {
         x.wrapping_mul(0x2545F4914F6CDD1D)
     }
 
-    /// Uniform in [-1, 1). (Named `scalar` — routes through the crate `Scalar`
-    /// so the same helpers compile under both the default f32 and `f64` builds.)
+    /// Uniform in [-1, 1), routed through the crate-wide `Scalar` alias.
     pub fn scalar(&mut self) -> Scalar {
         let u = (self.next_u64() >> 40) as Scalar / (1u64 << 24) as Scalar; // [0, 1)
         2.0 * u - 1.0
