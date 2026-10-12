@@ -13,11 +13,14 @@ use ndarray::{Array1, Array2, Array3, Axis};
 /// The loader must NOT transpose — this matches the safetensors layout.
 #[derive(Debug, Clone)]
 pub struct Dense {
-    pub kernel: Array2<f32>, // [in, out]
-    pub bias: Array1<f32>,   // [out]
+    /// Flax-layout weight matrix, shaped `[in, out]`.
+    pub kernel: Array2<f32>,
+    /// Output bias, shaped `[out]`.
+    pub bias: Array1<f32>,
 }
 
 impl Dense {
+    /// Creates a dense layer and validates the kernel/bias output width.
     pub fn new(kernel: Array2<f32>, bias: Array1<f32>) -> Self {
         assert_eq!(
             kernel.shape()[1],
@@ -53,17 +56,25 @@ impl Dense {
 /// (`rms_norm` + learnable scale, eps UNDER the sqrt).
 #[derive(Debug, Clone)]
 pub struct RmsNorm {
-    pub scale: Array1<f32>, // [feat]
-    pub eps: f32,           // 1e-6
+    /// Learned per-feature scale.
+    pub scale: Array1<f32>,
+    /// Stabilizer added under the square root.
+    pub eps: f32,
 }
 
 impl RmsNorm {
+    /// Creates RMS normalization with the pinned `1e-6` epsilon.
     pub fn new(scale: Array1<f32>) -> Self {
         Self { scale, eps: 1e-6 }
     }
 
+    /// Normalizes each row of `[rows, features]` over its feature axis.
     pub fn forward(&self, x: &Array2<f32>) -> Array2<f32> {
-        assert_eq!(x.shape()[1], self.scale.len(), "RmsNorm: feature dim mismatch");
+        assert_eq!(
+            x.shape()[1],
+            self.scale.len(),
+            "RmsNorm: feature dim mismatch"
+        );
         let feat = x.shape()[1] as f32;
         let mut out = x.clone();
         for mut row in out.axis_iter_mut(Axis(0)) {
@@ -83,19 +94,36 @@ impl RmsNorm {
 /// Matches Flax `_compute_stats`: `var = max(0, mean(x^2) - mean(x)^2)`.
 #[derive(Debug, Clone)]
 pub struct LayerNorm {
-    pub scale: Array1<f32>, // [feat]
-    pub bias: Array1<f32>,  // [feat]
-    pub eps: f32,           // 1e-6
+    /// Learned per-feature scale.
+    pub scale: Array1<f32>,
+    /// Learned per-feature bias.
+    pub bias: Array1<f32>,
+    /// Stabilizer added to the variance.
+    pub eps: f32,
 }
 
 impl LayerNorm {
+    /// Creates layer normalization with the pinned `1e-6` epsilon.
     pub fn new(scale: Array1<f32>, bias: Array1<f32>) -> Self {
-        assert_eq!(scale.len(), bias.len(), "LayerNorm: scale/bias dim mismatch");
-        Self { scale, bias, eps: 1e-6 }
+        assert_eq!(
+            scale.len(),
+            bias.len(),
+            "LayerNorm: scale/bias dim mismatch"
+        );
+        Self {
+            scale,
+            bias,
+            eps: 1e-6,
+        }
     }
 
+    /// Normalizes each row of `[rows, features]` over its feature axis.
     pub fn forward(&self, x: &Array2<f32>) -> Array2<f32> {
-        assert_eq!(x.shape()[1], self.scale.len(), "LayerNorm: feature dim mismatch");
+        assert_eq!(
+            x.shape()[1],
+            self.scale.len(),
+            "LayerNorm: feature dim mismatch"
+        );
         let feat = x.shape()[1] as f32;
         let mut out = x.clone();
         for mut row in out.axis_iter_mut(Axis(0)) {
@@ -119,13 +147,18 @@ impl LayerNorm {
 /// `None`. `norm` is the block's pre-norm (RMSNorm for `norm_type="rmsnorm"`).
 #[derive(Debug, Clone)]
 pub struct MlpBlock {
-    pub norm: RmsNorm,                 // block/norm (rmsnorm)
-    pub dense1: Dense,                 // block/dense1
-    pub dense2: Dense,                 // block/dense2 -> out_dim
-    pub residual_proj: Option<Dense>,  // block/residual_proj (only when in != out)
+    /// Pre-normalization layer.
+    pub norm: RmsNorm,
+    /// First learned projection.
+    pub dense1: Dense,
+    /// Projection back to the block output width.
+    pub dense2: Dense,
+    /// Optional learned residual projection when widths differ.
+    pub residual_proj: Option<Dense>,
 }
 
 impl MlpBlock {
+    /// Applies the pre-norm residual MLP to `[rows, features]`.
     pub fn forward(&self, x: &Array2<f32>) -> Array2<f32> {
         let h = self.norm.forward(x);
         let h = self.dense1.forward(&h).mapv(gelu_tanh);
@@ -197,8 +230,10 @@ pub fn rms_norm_last_axis(norm: &RmsNorm, x: &Array3<f32>) -> Array3<f32> {
 /// last axis (first half gate, second half up — `jnp.split(.., 2, -1)`).
 #[derive(Debug, Clone)]
 pub struct SwiGlu {
-    pub gate_up: Dense, // [in, 2*hidden]
-    pub down: Dense,    // [hidden, out]
+    /// Fused gate/up projection, shaped conceptually `[in, 2*hidden]`.
+    pub gate_up: Dense,
+    /// Projection from hidden width to output width.
+    pub down: Dense,
 }
 
 impl SwiGlu {
@@ -228,10 +263,14 @@ impl SwiGlu {
 /// add (post-norm), unlike the pre-norm [`MlpBlock`].
 #[derive(Debug, Clone)]
 pub struct MlpMixerBlock {
-    pub token_mlp: SwiGlu,   // hidden = token_mlp_dim, out = T
-    pub token_norm: RmsNorm, // [C]
-    pub channel_mlp: SwiGlu, // hidden = channel_mlp_dim, out = C
-    pub channel_norm: RmsNorm, // [C]
+    /// SwiGLU that mixes the token axis.
+    pub token_mlp: SwiGlu,
+    /// Post-residual normalization after token mixing.
+    pub token_norm: RmsNorm,
+    /// SwiGLU that mixes the channel axis.
+    pub channel_mlp: SwiGlu,
+    /// Post-residual normalization after channel mixing.
+    pub channel_norm: RmsNorm,
 }
 
 impl MlpMixerBlock {
@@ -281,7 +320,10 @@ mod tests {
     #[test]
     fn dense_matches_manual_matmul() {
         // y = x W + b with W stored [in, out] (Flax layout, NOT transposed).
-        let d = Dense::new(array![[1.0, 2.0, 3.0], [4.0, 5.0, 6.0]], array![0.5, -0.5, 0.0]);
+        let d = Dense::new(
+            array![[1.0, 2.0, 3.0], [4.0, 5.0, 6.0]],
+            array![0.5, -0.5, 0.0],
+        );
         let x = array![[1.0, 1.0], [2.0, -1.0]];
         let y = d.forward(&x);
         assert_eq!(y.shape(), &[2, 3]);
@@ -314,7 +356,11 @@ mod tests {
         let inv = 1.0 / (var + 1e-6f64).sqrt();
         assert_abs_diff_eq!(y[[0, 0]], ((1.0 - mean) * inv) as f32, epsilon = 1e-5);
         assert_abs_diff_eq!(y[[0, 1]], ((2.0 - mean) * inv + 0.1) as f32, epsilon = 1e-5);
-        assert_abs_diff_eq!(y[[0, 2]], ((6.0 - mean) * inv * 2.0 - 0.1) as f32, epsilon = 1e-5);
+        assert_abs_diff_eq!(
+            y[[0, 2]],
+            ((6.0 - mean) * inv * 2.0 - 0.1) as f32,
+            epsilon = 1e-5
+        );
     }
 
     #[test]
@@ -330,7 +376,10 @@ mod tests {
     fn gelu_is_tanh_approximation() {
         assert_eq!(gelu_tanh(0.0), 0.0);
         // f64 mirror of 0.5*x*(1+tanh(sqrt(2/pi)*(x+0.044715 x^3))) at x=1, x=-2.
-        let expect = |x: f64| 0.5 * x * (1.0 + ((2.0 / std::f64::consts::PI).sqrt() * (x + 0.044715 * x * x * x)).tanh());
+        let expect = |x: f64| {
+            0.5 * x
+                * (1.0 + ((2.0 / std::f64::consts::PI).sqrt() * (x + 0.044715 * x * x * x)).tanh())
+        };
         assert_abs_diff_eq!(gelu_tanh(1.0), expect(1.0) as f32, epsilon = 1e-6);
         assert_abs_diff_eq!(gelu_tanh(-2.0), expect(-2.0) as f32, epsilon = 1e-6);
         // Large |x| asymptotes.
@@ -471,15 +520,23 @@ mod tests {
         // Tiny [B=2, T=3, C=4] block; token hidden=5, channel hidden=6.
         let dense = |i: usize, o: usize, s: f32| {
             Dense::new(
-                Array2::from_shape_fn((i, o), |(r, c)| (((r * 5 + c * 3) % 7) as f32 / 7.0 - 0.4) * s),
+                Array2::from_shape_fn((i, o), |(r, c)| {
+                    (((r * 5 + c * 3) % 7) as f32 / 7.0 - 0.4) * s
+                }),
                 Array1::from_shape_fn(o, |j| 0.01 * j as f32),
             )
         };
         let (t, c) = (3usize, 4usize);
         let block = MlpMixerBlock {
-            token_mlp: SwiGlu { gate_up: dense(t, 2 * 5, 1.0), down: dense(5, t, 1.0) },
+            token_mlp: SwiGlu {
+                gate_up: dense(t, 2 * 5, 1.0),
+                down: dense(5, t, 1.0),
+            },
             token_norm: RmsNorm::new(Array1::from_shape_fn(c, |i| 1.0 + 0.1 * i as f32)),
-            channel_mlp: SwiGlu { gate_up: dense(c, 2 * 6, 1.0), down: dense(6, c, 1.0) },
+            channel_mlp: SwiGlu {
+                gate_up: dense(c, 2 * 6, 1.0),
+                down: dense(6, c, 1.0),
+            },
             channel_norm: RmsNorm::new(Array1::from_shape_fn(c, |i| 0.9 + 0.05 * i as f32)),
         };
         let x = Array3::from_shape_fn((2, t, c), |(b, tt, cc)| {
@@ -507,7 +564,11 @@ mod tests {
             .into_owned();
         let x1 = rms_norm_last_axis(&block.token_norm, &(&x + &yt));
         let x1f = x1.clone().into_shape_with_order((2 * t, c)).unwrap();
-        let yc = block.channel_mlp.forward(&x1f).into_shape_with_order((2, t, c)).unwrap();
+        let yc = block
+            .channel_mlp
+            .forward(&x1f)
+            .into_shape_with_order((2, t, c))
+            .unwrap();
         let want = rms_norm_last_axis(&block.channel_norm, &(&x1 + &yc));
         for (g, w) in got.iter().zip(want.iter()) {
             assert_abs_diff_eq!(g, w, epsilon = 1e-6);

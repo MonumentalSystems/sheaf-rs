@@ -31,32 +31,52 @@ use crate::layers::{
 /// in goldens/CONTRACT.md under `MLPEncoderV2_0/...`).
 #[derive(Debug, Clone)]
 pub struct MlpEncoderV2Params {
-    pub input_norm: RmsNorm,      // input_norm/scale [54]
-    pub dense: Dense,             // dense/{kernel [54,256], bias}
-    pub comm_dense: Dense,        // comm_head/comm_dense
-    pub comm_norm: LayerNorm,     // comm_head/comm_norm
-    pub q_diag_dense: Dense,      // objective_heads/q_diag_dense
-    pub q_dense: Dense,           // objective_heads/q_dense
-    pub l1_weight_dense: Dense,   // objective_heads/l1_weight_dense
-    pub upper_bound_dense: Dense, // objective_heads/upper_bound_dense
-    pub lora_pre_ln: LayerNorm,   // lora_pre_ln
-    pub lora_a_dense: Dense,      // lora_A_dense [256, K*d_e*r]
-    pub lora_b_dense: Dense,      // lora_B_dense [256, K*d_v*r]
+    /// Input RMS normalization.
+    pub input_norm: RmsNorm,
+    /// Shared trunk projection.
+    pub dense: Dense,
+    /// Communication-state projection.
+    pub comm_dense: Dense,
+    /// Communication-state normalization.
+    pub comm_norm: LayerNorm,
+    /// Positive quadratic-curvature head.
+    pub q_diag_dense: Dense,
+    /// Linear-objective head.
+    pub q_dense: Dense,
+    /// Per-coordinate L1 head.
+    pub l1_weight_dense: Dense,
+    /// Per-coordinate box-upper-bound head.
+    pub upper_bound_dense: Dense,
+    /// Layer normalization before LoRA heads.
+    pub lora_pre_ln: LayerNorm,
+    /// LoRA output-factor head.
+    pub lora_a_dense: Dense,
+    /// LoRA input-factor head.
+    pub lora_b_dense: Dense,
 }
 
 /// Config the encoder needs at run time.
 #[derive(Debug, Clone, Copy)]
 pub struct MlpEncoderV2Config {
-    pub d_v: usize,            // 10
-    pub d_e: usize,            // 5
-    pub num_directions: usize, // K = 8
-    pub lora_rank: usize,      // 4
-    pub lora_alpha: f32,       // 1.0
-    pub q_epsilon: f32,        // 1e-4
+    /// Node-stalk dimension.
+    pub d_v: usize,
+    /// Edge-stalk dimension.
+    pub d_e: usize,
+    /// Number of direction slots.
+    pub num_directions: usize,
+    /// LoRA rank.
+    pub lora_rank: usize,
+    /// LoRA scaling numerator.
+    pub lora_alpha: f32,
+    /// Positive floor added to quadratic curvatures.
+    pub q_epsilon: f32,
 }
 
+/// Maze MLP-v2 encoder and its runtime dimensions.
 pub struct MlpEncoderV2 {
+    /// Learned encoder parameters.
     pub params: MlpEncoderV2Params,
+    /// Runtime shape and numerical settings.
     pub config: MlpEncoderV2Config,
 }
 
@@ -98,7 +118,10 @@ impl MlpEncoderV2 {
         let feats = feats.mapv(gelu_tanh);
 
         // comm_head: Dense(d_v) -> LayerNorm (comm_norm_type = "layernorm").
-        let h = self.params.comm_norm.forward(&self.params.comm_dense.forward(&feats));
+        let h = self
+            .params
+            .comm_norm
+            .forward(&self.params.comm_dense.forward(&feats));
 
         // Objective heads (l1box_diag) read the trunk feats, not h.
         let q_eps = c.q_epsilon;
@@ -157,32 +180,51 @@ impl MlpEncoderV2 {
 /// of the block output — identical layout to the maze encoder.
 #[derive(Debug, Clone)]
 pub struct MlpEncoderParams {
-    pub input_proj: Dense,        // input_proj [in, hidden]
-    pub blocks: Vec<MlpBlock>,    // block_0 .. (mnist: one width-preserving block)
-    pub comm_dense: Dense,        // comm_head/comm_dense
-    pub comm_norm: LayerNorm,     // comm_head/comm_norm
-    pub q_diag_dense: Dense,      // objective_heads/q_diag_dense
-    pub q_dense: Dense,           // objective_heads/q_dense
-    pub lora_pre_ln: LayerNorm,   // lora_pre_ln
-    pub lora_a_dense: Dense,      // lora_A_dense [hidden, K*d_e*r]
-    pub lora_b_dense: Dense,      // lora_B_dense [hidden, K*d_v*r]
+    /// Input-to-hidden projection.
+    pub input_proj: Dense,
+    /// Residual trunk blocks.
+    pub blocks: Vec<MlpBlock>,
+    /// Communication-state projection.
+    pub comm_dense: Dense,
+    /// Communication-state normalization.
+    pub comm_norm: LayerNorm,
+    /// Positive quadratic-curvature head.
+    pub q_diag_dense: Dense,
+    /// Linear-objective head.
+    pub q_dense: Dense,
+    /// Layer normalization before LoRA heads.
+    pub lora_pre_ln: LayerNorm,
+    /// LoRA output-factor head.
+    pub lora_a_dense: Dense,
+    /// LoRA input-factor head.
+    pub lora_b_dense: Dense,
 }
 
 /// Config the residual encoder needs at run time. `l1_weight` is the `lasso`
 /// scalar (from the model config, NOT learned).
 #[derive(Debug, Clone, Copy)]
 pub struct MlpEncoderConfig {
-    pub d_v: usize,            // 32
-    pub d_e: usize,            // 24
-    pub num_directions: usize, // K = 8
-    pub lora_rank: usize,      // 8
-    pub lora_alpha: f32,       // 1.0
-    pub q_epsilon: f32,        // 1e-4
-    pub l1_weight: f32,        // scalar lasso weight (config)
+    /// Node-stalk dimension.
+    pub d_v: usize,
+    /// Edge-stalk dimension.
+    pub d_e: usize,
+    /// Number of direction slots.
+    pub num_directions: usize,
+    /// LoRA rank.
+    pub lora_rank: usize,
+    /// LoRA scaling numerator.
+    pub lora_alpha: f32,
+    /// Positive floor added to quadratic curvatures.
+    pub q_epsilon: f32,
+    /// Scalar L1 regularization strength.
+    pub l1_weight: f32,
 }
 
+/// Residual MLP encoder used by the MNIST model path.
 pub struct MlpEncoder {
+    /// Learned encoder parameters.
     pub params: MlpEncoderParams,
+    /// Runtime shape and objective settings.
     pub config: MlpEncoderConfig,
 }
 
@@ -206,7 +248,10 @@ impl MlpEncoder {
         }
 
         // comm_head: Dense(d_v) -> LayerNorm (comm_norm_type = "layernorm").
-        let h = self.params.comm_norm.forward(&self.params.comm_dense.forward(&feats));
+        let h = self
+            .params
+            .comm_norm
+            .forward(&self.params.comm_dense.forward(&feats));
 
         // Objective heads (lasso) read the trunk `feats`, not h.
         let q_eps = c.q_epsilon;
@@ -257,9 +302,12 @@ impl MlpEncoder {
 /// encoders which use a LayerNorm (`lora_pre_ln`) — pinned by the param dump.
 #[derive(Debug, Clone)]
 pub struct SudokuLoraHeads {
-    pub lora_pre_norm: RmsNorm, // lora_pre_norm/scale [d_model]
-    pub lora_a_dense: Dense,    // lora_A_dense [d_model, 9*d_e*r]
-    pub lora_b_dense: Dense,    // lora_B_dense [d_model, 9*d_v*r]
+    /// RMS normalization before the LoRA heads.
+    pub lora_pre_norm: RmsNorm,
+    /// LoRA output-factor head.
+    pub lora_a_dense: Dense,
+    /// LoRA input-factor head.
+    pub lora_b_dense: Dense,
 }
 
 /// Weights of the Sudoku MLP-Mixer encoder (`arch = "sudoku"`). Flax module
@@ -267,34 +315,56 @@ pub struct SudokuLoraHeads {
 /// the Python param dump.
 #[derive(Debug, Clone)]
 pub struct SudokuEncoderParams {
-    pub token_embed: Dense,               // token_embed [num_classes, d_model]
-    pub global_pos_embed: Array2<f32>,    // global_pos_embed/embedding [81, d_model]
-    pub pos_embed: Array2<f32>,           // pos_embed [9, d_model] (from the (1,9,d_model) param)
-    pub mixer_blocks: Vec<MlpMixerBlock>, // mixer_block_0 .. mixer_block_{num_blocks-1}
-    pub pre_flat_norm: RmsNorm,           // pre_flat_norm/scale [d_model]
-    pub cell_proj: Dense,                 // cell_proj [d_model, cell_dim]
-    pub cell_norm: RmsNorm,               // cell_norm/scale [cell_dim]
-    pub comm_dense: Dense,                // comm_head/comm_dense [d_v, d_v]
-    pub comm_norm: LayerNorm,             // comm_head/comm_norm [d_v]
-    pub q_diag_dense: Dense,              // objective_heads/q_diag_dense [d_model, d_v]
-    pub q_dense: Dense,                   // objective_heads/q_dense [d_model, d_v]
-    pub lora: Option<SudokuLoraHeads>,    // present iff rm_mode = "context"
+    /// One-hot token embedding projection.
+    pub token_embed: Dense,
+    /// Absolute embedding for the 81 global Sudoku cells.
+    pub global_pos_embed: Array2<f32>,
+    /// Relative embedding for the nine positions in each agent view.
+    pub pos_embed: Array2<f32>,
+    /// MLP-Mixer trunk blocks.
+    pub mixer_blocks: Vec<MlpMixerBlock>,
+    /// RMS normalization before flattening cell features.
+    pub pre_flat_norm: RmsNorm,
+    /// Per-cell feature projection.
+    pub cell_proj: Dense,
+    /// Per-cell output normalization.
+    pub cell_norm: RmsNorm,
+    /// Communication-state projection.
+    pub comm_dense: Dense,
+    /// Communication-state normalization.
+    pub comm_norm: LayerNorm,
+    /// Positive quadratic-curvature head.
+    pub q_diag_dense: Dense,
+    /// Linear-objective head.
+    pub q_dense: Dense,
+    /// Optional context-dependent LoRA heads.
+    pub lora: Option<SudokuLoraHeads>,
 }
 
 /// Config the Sudoku encoder needs at run time.
 #[derive(Debug, Clone, Copy)]
 pub struct SudokuEncoderConfig {
-    pub d_v: usize,       // 288 (comm_dim; 9 contiguous cell blocks)
-    pub d_e: usize,       // 32 (edge stalk; LoRA A width)
-    pub d_model: usize,   // 128 (mixer token width)
-    pub num_slots: usize, // 9 (LoRA cell-slots = num_directions)
-    pub lora_rank: usize, // 4
-    pub lora_alpha: f32,  // 1.0
-    pub q_epsilon: f32,   // 1e-4
+    /// Node-stalk dimension containing nine contiguous cell blocks.
+    pub d_v: usize,
+    /// Edge-stalk dimension.
+    pub d_e: usize,
+    /// Mixer token width.
+    pub d_model: usize,
+    /// Number of per-agent cell slots.
+    pub num_slots: usize,
+    /// LoRA rank.
+    pub lora_rank: usize,
+    /// LoRA scaling numerator.
+    pub lora_alpha: f32,
+    /// Positive floor added to quadratic curvatures.
+    pub q_epsilon: f32,
 }
 
+/// Sudoku MLP-Mixer encoder and its runtime dimensions.
 pub struct SudokuEncoder {
+    /// Learned encoder parameters.
     pub params: SudokuEncoderParams,
+    /// Runtime shape and numerical settings.
     pub config: SudokuEncoderConfig,
 }
 
@@ -314,7 +384,7 @@ impl SudokuEncoder {
     /// nb / b`); pass `b` (the batch size) so each agent's `b` copies share ids.
     pub fn embed_tokens(
         &self,
-        x: &Array3<f32>,        // [nb, 9, num_classes]
+        x: &Array3<f32>,         // [nb, 9, num_classes]
         cell_rows: &Array2<i64>, // [N, 9] global cell ids 0..80
         b: usize,
     ) -> Array3<f32> {
@@ -424,8 +494,16 @@ impl SudokuEncoder {
             let a_flat = lh.lora_a_dense.forward(&x_lora);
             let b_flat = lh.lora_b_dense.forward(&x_lora);
             let (k, d_e, d_v, r) = (c.num_slots, c.d_e, c.d_v, c.lora_rank);
-            assert_eq!(a_flat.shape()[1], k * d_e * r, "sudoku lora_A_dense out dim");
-            assert_eq!(b_flat.shape()[1], k * d_v * r, "sudoku lora_B_dense out dim");
+            assert_eq!(
+                a_flat.shape()[1],
+                k * d_e * r,
+                "sudoku lora_A_dense out dim"
+            );
+            assert_eq!(
+                b_flat.shape()[1],
+                k * d_v * r,
+                "sudoku lora_B_dense out dim"
+            );
             let a = a_flat
                 .into_shape_with_order((n, b, k, d_e, r))
                 .expect("sudoku lora A reshape");
@@ -461,7 +539,10 @@ mod tests {
     struct Lcg(u64);
     impl Lcg {
         fn next_f32(&mut self) -> f32 {
-            self.0 = self.0.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+            self.0 = self
+                .0
+                .wrapping_mul(6364136223846793005)
+                .wrapping_add(1442695040888963407);
             // top 24 bits -> [-0.5, 0.5)
             ((self.0 >> 40) as f32 / (1u64 << 24) as f32) - 0.5
         }
@@ -524,7 +605,12 @@ mod tests {
         let out = enc.forward(&patches);
         assert_eq!(out.h.shape(), &[5, 2, 3]);
         match &out.objective {
-            Objective::L1Box { q_diag, q, l1, upper } => {
+            Objective::L1Box {
+                q_diag,
+                q,
+                l1,
+                upper,
+            } => {
                 assert_eq!(q_diag.shape(), &[5, 2, 3]);
                 assert_eq!(q.shape(), &[5, 2, 3]);
                 assert_eq!(l1.shape(), &[5, 2, 3]);
@@ -550,7 +636,12 @@ mod tests {
         let out = enc.forward(&tiny_patches(2, 1));
         let expected = std::f32::consts::LN_2 + 1e-4;
         match &out.objective {
-            Objective::L1Box { q_diag, q, l1, upper } => {
+            Objective::L1Box {
+                q_diag,
+                q,
+                l1,
+                upper,
+            } => {
                 for &v in q_diag.iter() {
                     assert_abs_diff_eq!(v, expected, epsilon = 1e-7);
                 }
@@ -583,8 +674,15 @@ mod tests {
             for (a, b) in h_i.iter().zip(h_s.iter()) {
                 assert_abs_diff_eq!(a, b, epsilon = 1e-6);
             }
-            let (fa, sa) = (&full.lora.as_ref().unwrap().a, &single.lora.as_ref().unwrap().a);
-            for (a, b) in fa.index_axis(Axis(0), i).iter().zip(sa.index_axis(Axis(0), 0).iter()) {
+            let (fa, sa) = (
+                &full.lora.as_ref().unwrap().a,
+                &single.lora.as_ref().unwrap().a,
+            );
+            for (a, b) in fa
+                .index_axis(Axis(0), i)
+                .iter()
+                .zip(sa.index_axis(Axis(0), 0).iter())
+            {
                 assert_abs_diff_eq!(a, b, epsilon = 1e-6);
             }
         }
@@ -596,9 +694,10 @@ mod tests {
     /// objective_mode=l1box_diag, comm_norm_type=layernorm).
     #[test]
     fn matches_flax_reference_dump() {
-        let kern = |i: usize, o: usize, s: f32, |
-         -> Array2<f32> {
-            Array2::from_shape_fn((i, o), |(r, c)| (((r * 31 + c * 17) % 13) as f32 / 13.0 - 0.4) * s)
+        let kern = |i: usize, o: usize, s: f32| -> Array2<f32> {
+            Array2::from_shape_fn((i, o), |(r, c)| {
+                (((r * 31 + c * 17) % 13) as f32 / 13.0 - 0.4) * s
+            })
         };
         let bias = |o: usize, off: f32, s: f32| -> Array1<f32> {
             Array1::from_shape_fn(o, |j| (((j * 7) % 5) as f32 / 5.0 - 0.3) * s + off)
@@ -648,29 +747,54 @@ mod tests {
 
         check(
             &flat(out.h.view().into_dyn()),
-            &[-0.05034607, -1.2686696, 1.0742228, -0.7055556, -0.72951627, 1.222786],
+            &[
+                -0.05034607,
+                -1.2686696,
+                1.0742228,
+                -0.7055556,
+                -0.72951627,
+                1.222786,
+            ],
             "h",
         );
         match &out.objective {
-            Objective::L1Box { q_diag, q, l1, upper } => {
+            Objective::L1Box {
+                q_diag,
+                q,
+                l1,
+                upper,
+            } => {
                 check(
                     &flat(q_diag.view().into_dyn()),
-                    &[0.65050924, 0.6507697, 0.99819064, 0.6000957, 0.6950392, 1.0204282],
+                    &[
+                        0.65050924, 0.6507697, 0.99819064, 0.6000957, 0.6950392, 1.0204282,
+                    ],
                     "q_diag",
                 );
                 check(
                     &flat(q.view().into_dyn()),
-                    &[-0.89766204, 0.46157545, 0.94637644, -0.7457681, 0.3349867, 0.8973856],
+                    &[
+                        -0.89766204,
+                        0.46157545,
+                        0.94637644,
+                        -0.7457681,
+                        0.3349867,
+                        0.8973856,
+                    ],
                     "q",
                 );
                 check(
                     &flat(l1.view().into_dyn()),
-                    &[0.26973206, 0.31002083, 0.48281556, 0.2547201, 0.32477295, 0.49090838],
+                    &[
+                        0.26973206, 0.31002083, 0.48281556, 0.2547201, 0.32477295, 0.49090838,
+                    ],
                     "l1_weight",
                 );
                 check(
                     &flat(upper.view().into_dyn()),
-                    &[0.8457926, 0.98987776, 1.3244853, 0.8212527, 1.0127573, 1.3347793],
+                    &[
+                        0.8457926, 0.98987776, 1.3244853, 0.8212527, 1.0127573, 1.3347793,
+                    ],
                     "upper",
                 );
             }
@@ -680,19 +804,52 @@ mod tests {
         check(
             &flat(lora.a.view().into_dyn()),
             &[
-                0.72356135, -0.6365961, 0.5467125, 0.13988307, -0.45561427, -0.97954136,
-                0.3208648, 1.5615978, 0.50632757, -0.41746548, 0.78691775, -0.44237208,
-                -0.23662621, -0.75998324, -0.26153287, 1.3446491,
+                0.72356135,
+                -0.6365961,
+                0.5467125,
+                0.13988307,
+                -0.45561427,
+                -0.97954136,
+                0.3208648,
+                1.5615978,
+                0.50632757,
+                -0.41746548,
+                0.78691775,
+                -0.44237208,
+                -0.23662621,
+                -0.75998324,
+                -0.26153287,
+                1.3446491,
             ],
             "A",
         );
         check(
             &flat(lora.b.view().into_dyn()),
             &[
-                0.72356135, -0.6365961, 0.5467125, 0.13988307, -0.45561427, -0.97954136,
-                0.3208648, 1.5615978, -0.79855955, 0.384749, 0.7425795, -0.6175778,
-                0.50632757, -0.41746548, 0.78691775, -0.44237208, -0.23662621, -0.75998324,
-                -0.26153287, 1.3446491, -0.57914394, 0.62523925, 0.52548826, -0.3983047,
+                0.72356135,
+                -0.6365961,
+                0.5467125,
+                0.13988307,
+                -0.45561427,
+                -0.97954136,
+                0.3208648,
+                1.5615978,
+                -0.79855955,
+                0.384749,
+                0.7425795,
+                -0.6175778,
+                0.50632757,
+                -0.41746548,
+                0.78691775,
+                -0.44237208,
+                -0.23662621,
+                -0.75998324,
+                -0.26153287,
+                1.3446491,
+                -0.57914394,
+                0.62523925,
+                0.52548826,
+                -0.3983047,
             ],
             "B",
         );
@@ -751,7 +908,10 @@ mod tests {
             Objective::Lasso { q_diag, q, l1 } => {
                 assert_eq!(q_diag.shape(), &[5, 2, 3]);
                 assert_eq!(q.shape(), &[5, 2, 3]);
-                assert!(q_diag.iter().all(|&v| v >= 1e-4), "q_diag floored at q_epsilon");
+                assert!(
+                    q_diag.iter().all(|&v| v >= 1e-4),
+                    "q_diag floored at q_epsilon"
+                );
                 // scalar lasso weight is passed through unchanged.
                 assert_abs_diff_eq!(*l1, 0.006_337_180_3, epsilon = 0.0);
             }
@@ -771,7 +931,10 @@ mod tests {
         let patches = tiny_mlp_patches(n, 3);
         let full = enc.forward(&patches);
         for i in 0..n {
-            let slab = patches.index_axis(Axis(0), i).to_owned().insert_axis(Axis(0));
+            let slab = patches
+                .index_axis(Axis(0), i)
+                .to_owned()
+                .insert_axis(Axis(0));
             let single = enc.forward(&slab);
             for (a, b) in full
                 .h
@@ -794,7 +957,10 @@ mod tests {
         for block in &enc.params.blocks {
             feats = block.forward(&feats);
         }
-        let h_ref = enc.params.comm_norm.forward(&enc.params.comm_dense.forward(&feats));
+        let h_ref = enc
+            .params
+            .comm_norm
+            .forward(&enc.params.comm_dense.forward(&feats));
         let out = enc.forward(&patches);
         for (g, w) in out.h.iter().zip(h_ref.iter()) {
             assert_abs_diff_eq!(g, w, epsilon = 1e-6);
@@ -850,9 +1016,15 @@ mod tests {
         let (th, ch) = (5usize, 6usize); // token/channel hidden
         let dense = |g: &mut Lcg, i: usize, o: usize| Dense::new(g.mat(i, o), g.vec(o));
         let block = MlpMixerBlock {
-            token_mlp: SwiGlu { gate_up: dense(&mut g, 9, 2 * th), down: dense(&mut g, th, 9) },
+            token_mlp: SwiGlu {
+                gate_up: dense(&mut g, 9, 2 * th),
+                down: dense(&mut g, th, 9),
+            },
             token_norm: RmsNorm::new(g.vec(d_model).mapv(|v| v + 1.0)),
-            channel_mlp: SwiGlu { gate_up: dense(&mut g, d_model, 2 * ch), down: dense(&mut g, ch, d_model) },
+            channel_mlp: SwiGlu {
+                gate_up: dense(&mut g, d_model, 2 * ch),
+                down: dense(&mut g, ch, d_model),
+            },
             channel_norm: RmsNorm::new(g.vec(d_model).mapv(|v| v + 1.0)),
         };
         let lora = with_lora.then(|| SudokuLoraHeads {
@@ -908,7 +1080,10 @@ mod tests {
             Objective::NonNeg { q_diag, q } => {
                 assert_eq!(q_diag.shape(), &[4, 2, 18]);
                 assert_eq!(q.shape(), &[4, 2, 18]);
-                assert!(q_diag.iter().all(|&v| v >= 1e-4), "q_diag floored at q_epsilon");
+                assert!(
+                    q_diag.iter().all(|&v| v >= 1e-4),
+                    "q_diag floored at q_epsilon"
+                );
             }
             _ => panic!("sudoku encoder must emit Objective::NonNeg"),
         }
@@ -922,7 +1097,10 @@ mod tests {
     fn sudoku_fixed_mode_emits_no_lora() {
         let enc = tiny_sudoku_encoder(9, false);
         let out = enc.forward(&tiny_sudoku_patches(2, 1), &tiny_cell_ids(2));
-        assert!(out.lora.is_none(), "rm_mode=fixed must not emit LoRA factors");
+        assert!(
+            out.lora.is_none(),
+            "rm_mode=fixed must not emit LoRA factors"
+        );
     }
 
     #[test]
@@ -963,7 +1141,11 @@ mod tests {
         let d_model = 4usize;
         let te = {
             let flat = x.clone().into_shape_with_order((n * b * 9, 3)).unwrap();
-            enc.params.token_embed.forward(&flat).into_shape_with_order((n * b, 9, d_model)).unwrap()
+            enc.params
+                .token_embed
+                .forward(&flat)
+                .into_shape_with_order((n * b, 9, d_model))
+                .unwrap()
         };
         for idx in 0..n * b {
             let na = idx / b;
@@ -978,7 +1160,10 @@ mod tests {
                     // A scale-before-pos bug would give e*scale + gg + pp.
                     let scale_before = e * scale + gg + pp;
                     if (gg + pp).abs() > 1e-4 {
-                        assert!((want - scale_before).abs() > 1e-6, "ordering must be observable");
+                        assert!(
+                            (want - scale_before).abs() > 1e-6,
+                            "ordering must be observable"
+                        );
                     }
                 }
             }
@@ -991,9 +1176,7 @@ mod tests {
         // [k*cell_dim, (k+1)*cell_dim) after the row-major flatten.
         let cell_dim = 2usize;
         let y_cells = Array3::from_shape_fn((1, 9, cell_dim), |(_, k, d)| (k * 100 + d) as f32);
-        let flat = y_cells
-            .into_shape_with_order((1, 9 * cell_dim))
-            .unwrap();
+        let flat = y_cells.into_shape_with_order((1, 9 * cell_dim)).unwrap();
         for k in 0..9 {
             for d in 0..cell_dim {
                 assert_eq!(flat[[0, k * cell_dim + d]], (k * 100 + d) as f32);
@@ -1034,14 +1217,32 @@ mod tests {
         let cell_ids = tiny_cell_ids(n);
         let full = enc.forward(&patches, &cell_ids);
         for i in 0..n {
-            let slab = patches.index_axis(Axis(0), i).to_owned().insert_axis(Axis(0));
-            let ids_i = cell_ids.index_axis(Axis(0), i).to_owned().insert_axis(Axis(0));
+            let slab = patches
+                .index_axis(Axis(0), i)
+                .to_owned()
+                .insert_axis(Axis(0));
+            let ids_i = cell_ids
+                .index_axis(Axis(0), i)
+                .to_owned()
+                .insert_axis(Axis(0));
             let single = enc.forward(&slab, &ids_i);
-            for (a, b) in full.h.index_axis(Axis(0), i).iter().zip(single.h.index_axis(Axis(0), 0).iter()) {
+            for (a, b) in full
+                .h
+                .index_axis(Axis(0), i)
+                .iter()
+                .zip(single.h.index_axis(Axis(0), 0).iter())
+            {
                 assert_abs_diff_eq!(a, b, epsilon = 1e-6);
             }
-            let (fa, sa) = (&full.lora.as_ref().unwrap().a, &single.lora.as_ref().unwrap().a);
-            for (a, b) in fa.index_axis(Axis(0), i).iter().zip(sa.index_axis(Axis(0), 0).iter()) {
+            let (fa, sa) = (
+                &full.lora.as_ref().unwrap().a,
+                &single.lora.as_ref().unwrap().a,
+            );
+            for (a, b) in fa
+                .index_axis(Axis(0), i)
+                .iter()
+                .zip(sa.index_axis(Axis(0), 0).iter())
+            {
                 assert_abs_diff_eq!(a, b, epsilon = 1e-6);
             }
         }

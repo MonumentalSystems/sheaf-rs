@@ -24,10 +24,15 @@ use sheaf_core::graph::{AgentGraph, NodeIncidence};
 /// slot 0 is the pad/ignore id; inputs carry 1-4; labels add 5 (path).
 /// vocab_size = 6. Maze `solved` eval compares only the `TOKEN_PATH = 5` mask.
 pub const TOKEN_PAD: i64 = 0;
+/// Wall-cell token.
 pub const TOKEN_WALL: i64 = 1;
+/// Traversable empty-cell token.
 pub const TOKEN_EMPTY: i64 = 2;
+/// Maze start-cell token.
 pub const TOKEN_START: i64 = 3;
+/// Maze goal-cell token.
 pub const TOKEN_GOAL: i64 = 4;
+/// Ground-truth solution-path token.
 pub const TOKEN_PATH: i64 = 5;
 
 /// Agent centers on a regular grid: `range(patch_size // 2, dim, stride)` per
@@ -186,8 +191,7 @@ pub fn patchify_batch(
                 }
                 for bi in 0..b {
                     for ch in 0..c {
-                        patches[[a, bi, py, px, ch]] =
-                            images[[bi, iy as usize, ix as usize, ch]];
+                        patches[[a, bi, py, px, ch]] = images[[bi, iy as usize, ix as usize, ch]];
                     }
                 }
             }
@@ -213,7 +217,12 @@ fn overlap_slices(
     let y_end = (y0 + patch_size as i64).min(h);
     let x_end = (x0 + patch_size as i64).min(w);
 
-    ((y_start, y_end), (x_start, x_end), y_start - y0, x_start - x0)
+    (
+        (y_start, y_end),
+        (x_start, x_end),
+        y_start - y0,
+        x_start - x0,
+    )
 }
 
 /// Overlap-mean reassembly of per-agent patch logits into a global logit map.
@@ -333,7 +342,11 @@ pub fn sudoku_slice_batch(grids: &Array4<f32>) -> Array4<f32> {
 /// row, column, and box reconstructions (inverse of [`sudoku_slice_batch`]).
 pub fn reassemble_sudoku_logits(views: &Array4<f32>) -> Array4<f32> {
     let (b, a, s, c) = views.dim();
-    assert_eq!((a, s), (SUDOKU_NUM_AGENTS, 9), "sudoku views must be [B, 27, 9, C]");
+    assert_eq!(
+        (a, s),
+        (SUDOKU_NUM_AGENTS, 9),
+        "sudoku views must be [B, 27, 9, C]"
+    );
     let mut out = Array4::<f32>::zeros((b, 9, 9, c));
     for bi in 0..b {
         for ch in 0..c {
@@ -441,7 +454,11 @@ pub fn build_sudoku_graph() -> AgentGraph {
 /// then argmax over the class axis (first-max tie-break = `jnp.argmax`).
 pub fn sudoku_predict(logits_final: &Array4<f32>) -> Array3<i64> {
     let (n, b, s, c) = logits_final.dim();
-    assert_eq!((n, s), (SUDOKU_NUM_AGENTS, 9), "logits must be [27, B, 9, C]");
+    assert_eq!(
+        (n, s),
+        (SUDOKU_NUM_AGENTS, 9),
+        "logits must be [27, B, 9, C]"
+    );
     // Transpose [N, B, 9, C] -> [B, 27, 9, C].
     let mut views = Array4::<f32>::zeros((b, n, s, c));
     for ni in 0..n {
@@ -478,8 +495,11 @@ pub fn sudoku_predict(logits_final: &Array4<f32>) -> Array3<i64> {
 /// (`inputs == 0`), guarded by `max(sum(empty), 1)`.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct SudokuMetrics {
+    /// Fraction of all cells predicted correctly.
     pub cell_acc: f32,
+    /// Fraction of boards with every cell predicted correctly.
     pub solved: f32,
+    /// Accuracy restricted to cells that were empty in the input.
     pub completion: f32,
 }
 
@@ -536,14 +556,17 @@ pub const SUDOKU_EDGE_U: [u32; SUDOKU_NUM_EDGES] = [
     0,0,9,0,0,10,0,0,11,0,0,12,0,0,13,0,0,14,0,0,15,0,0,16,0,0,17,1,1,9,1,1,10,1,1,11,1,1,12,1,1,13,1,1,14,1,1,15,1,1,16,1,1,17,2,2,9,2,2,10,2,2,11,2,2,12,2,2,13,2,2,14,2,2,15,2,2,16,2,2,17,3,3,9,3,3,10,3,3,11,3,3,12,3,3,13,3,3,14,3,3,15,3,3,16,3,3,17,4,4,9,4,4,10,4,4,11,4,4,12,4,4,13,4,4,14,4,4,15,4,4,16,4,4,17,5,5,9,5,5,10,5,5,11,5,5,12,5,5,13,5,5,14,5,5,15,5,5,16,5,5,17,6,6,9,6,6,10,6,6,11,6,6,12,6,6,13,6,6,14,6,6,15,6,6,16,6,6,17,7,7,9,7,7,10,7,7,11,7,7,12,7,7,13,7,7,14,7,7,15,7,7,16,7,7,17,8,8,9,8,8,10,8,8,11,8,8,12,8,8,13,8,8,14,8,8,15,8,8,16,8,8,17,
 ];
 #[rustfmt::skip]
+/// Second-agent index for each hardcoded Sudoku multigraph edge.
 pub const SUDOKU_EDGE_V: [u32; SUDOKU_NUM_EDGES] = [
     9,18,18,10,18,18,11,18,18,12,19,19,13,19,19,14,19,19,15,20,20,16,20,20,17,20,20,9,18,18,10,18,18,11,18,18,12,19,19,13,19,19,14,19,19,15,20,20,16,20,20,17,20,20,9,18,18,10,18,18,11,18,18,12,19,19,13,19,19,14,19,19,15,20,20,16,20,20,17,20,20,9,21,21,10,21,21,11,21,21,12,22,22,13,22,22,14,22,22,15,23,23,16,23,23,17,23,23,9,21,21,10,21,21,11,21,21,12,22,22,13,22,22,14,22,22,15,23,23,16,23,23,17,23,23,9,21,21,10,21,21,11,21,21,12,22,22,13,22,22,14,22,22,15,23,23,16,23,23,17,23,23,9,24,24,10,24,24,11,24,24,12,25,25,13,25,25,14,25,25,15,26,26,16,26,26,17,26,26,9,24,24,10,24,24,11,24,24,12,25,25,13,25,25,14,25,25,15,26,26,16,26,26,17,26,26,9,24,24,10,24,24,11,24,24,12,25,25,13,25,25,14,25,25,15,26,26,16,26,26,17,26,26,
 ];
 #[rustfmt::skip]
+/// Cell-slot restriction-map index at each edge's first endpoint.
 pub const SUDOKU_MAP_U: [u8; SUDOKU_NUM_EDGES] = [
     0,0,0,1,1,0,2,2,0,3,3,0,4,4,0,5,5,0,6,6,0,7,7,0,8,8,0,0,0,1,1,1,1,2,2,1,3,3,1,4,4,1,5,5,1,6,6,1,7,7,1,8,8,1,0,0,2,1,1,2,2,2,2,3,3,2,4,4,2,5,5,2,6,6,2,7,7,2,8,8,2,0,0,3,1,1,3,2,2,3,3,3,3,4,4,3,5,5,3,6,6,3,7,7,3,8,8,3,0,0,4,1,1,4,2,2,4,3,3,4,4,4,4,5,5,4,6,6,4,7,7,4,8,8,4,0,0,5,1,1,5,2,2,5,3,3,5,4,4,5,5,5,5,6,6,5,7,7,5,8,8,5,0,0,6,1,1,6,2,2,6,3,3,6,4,4,6,5,5,6,6,6,6,7,7,6,8,8,6,0,0,7,1,1,7,2,2,7,3,3,7,4,4,7,5,5,7,6,6,7,7,7,7,8,8,7,0,0,8,1,1,8,2,2,8,3,3,8,4,4,8,5,5,8,6,6,8,7,7,8,8,8,8,
 ];
 #[rustfmt::skip]
+/// Cell-slot restriction-map index at each edge's second endpoint.
 pub const SUDOKU_MAP_V: [u8; SUDOKU_NUM_EDGES] = [
     0,0,0,0,1,1,0,2,2,0,0,0,0,1,1,0,2,2,0,0,0,0,1,1,0,2,2,1,3,3,1,4,4,1,5,5,1,3,3,1,4,4,1,5,5,1,3,3,1,4,4,1,5,5,2,6,6,2,7,7,2,8,8,2,6,6,2,7,7,2,8,8,2,6,6,2,7,7,2,8,8,3,0,0,3,1,1,3,2,2,3,0,0,3,1,1,3,2,2,3,0,0,3,1,1,3,2,2,4,3,3,4,4,4,4,5,5,4,3,3,4,4,4,4,5,5,4,3,3,4,4,4,4,5,5,5,6,6,5,7,7,5,8,8,5,6,6,5,7,7,5,8,8,5,6,6,5,7,7,5,8,8,6,0,0,6,1,1,6,2,2,6,0,0,6,1,1,6,2,2,6,0,0,6,1,1,6,2,2,7,3,3,7,4,4,7,5,5,7,3,3,7,4,4,7,5,5,7,3,3,7,4,4,7,5,5,8,6,6,8,7,7,8,8,8,8,6,6,8,7,7,8,8,8,8,6,6,8,7,7,8,8,8,
 ];
@@ -627,11 +650,7 @@ mod tests {
                     let tok = tokens[[bi, y, x]] as usize;
                     for ch in 0..6 {
                         let want = if ch == tok { 1.0 } else { 0.0 };
-                        assert_abs_diff_eq!(
-                            reassembled[[bi, y, x, ch]],
-                            want,
-                            epsilon = 1e-5
-                        );
+                        assert_abs_diff_eq!(reassembled[[bi, y, x, ch]], want, epsilon = 1e-5);
                     }
                 }
             }
@@ -653,11 +672,7 @@ mod tests {
                 let expect_tok = if inside { TOKEN_EMPTY } else { TOKEN_WALL } as usize;
                 for ch in 0..6 {
                     let want = if ch == expect_tok { 1.0 } else { 0.0 };
-                    assert_eq!(
-                        patches[[0, 0, py, px, ch]],
-                        want,
-                        "py={py} px={px} ch={ch}"
-                    );
+                    assert_eq!(patches[[0, 0, py, px, ch]], want, "py={py} px={px} ch={ch}");
                 }
             }
         }
@@ -750,9 +765,15 @@ mod tests {
         let ids = build_sudoku_cell_indices();
         assert_eq!(ids.dim(), (27, 9));
         assert_eq!(ids.row(0).to_vec(), (0..9).collect::<Vec<_>>()); // row 0
-        assert_eq!(ids.row(9).to_vec(), (0..9).map(|r| r * 9).collect::<Vec<_>>()); // col 0
+        assert_eq!(
+            ids.row(9).to_vec(),
+            (0..9).map(|r| r * 9).collect::<Vec<_>>()
+        ); // col 0
         assert_eq!(ids.row(18).to_vec(), vec![0, 1, 2, 9, 10, 11, 18, 19, 20]); // box 0
-        assert_eq!(ids.row(26).to_vec(), vec![60, 61, 62, 69, 70, 71, 78, 79, 80]); // box 8
+        assert_eq!(
+            ids.row(26).to_vec(),
+            vec![60, 61, 62, 69, 70, 71, 78, 79, 80]
+        ); // box 8
     }
 
     #[test]
@@ -765,7 +786,10 @@ mod tests {
                 counts[ids[[agent, local]] as usize] += 1;
             }
         }
-        assert!(counts.iter().all(|&c| c == 3), "every cell covered exactly 3x");
+        assert!(
+            counts.iter().all(|&c| c == 3),
+            "every cell covered exactly 3x"
+        );
     }
 
     #[test]
@@ -803,7 +827,10 @@ mod tests {
             assert_eq!(cu, cv, "edge {i} endpoints must share a cell");
             cell_edges[cu as usize] += 1;
         }
-        assert!(cell_edges.iter().all(|&c| c == 3), "3 edges (a 3-clique) per cell");
+        assert!(
+            cell_edges.iter().all(|&c| c == 3),
+            "3 edges (a 3-clique) per cell"
+        );
     }
 
     #[test]
@@ -857,7 +884,11 @@ mod tests {
         let labels = Array3::from_shape_fn((1, 9, 9), |(_, r, col)| ((r * 9 + col) % 9 + 1) as i64);
         // Inputs: half the cells given (nonzero), half empty (0).
         let inputs = Array3::from_shape_fn((1, 9, 9), |(_, r, col)| {
-            if (r + col) % 2 == 0 { labels[[0, r, col]] } else { 0 }
+            if (r + col) % 2 == 0 {
+                labels[[0, r, col]]
+            } else {
+                0
+            }
         });
         // Perfect logits: one-hot on the label digit for every covering agent.
         let c = 10usize;
@@ -871,7 +902,10 @@ mod tests {
             }
         }
         let pred = sudoku_predict(&logits);
-        assert_eq!(pred, labels, "perfect logits must reconstruct the label grid");
+        assert_eq!(
+            pred, labels,
+            "perfect logits must reconstruct the label grid"
+        );
         let m = sudoku_metrics(&pred, &labels, &inputs);
         assert_abs_diff_eq!(m.cell_acc, 1.0, epsilon = 0.0);
         assert_abs_diff_eq!(m.solved, 1.0, epsilon = 0.0);
@@ -889,7 +923,10 @@ mod tests {
             }
         }
         let m2 = sudoku_metrics(&pred2, &labels, &inputs);
-        assert!(m2.completion < 1.0, "corrupting an empty cell must drop completion");
+        assert!(
+            m2.completion < 1.0,
+            "corrupting an empty cell must drop completion"
+        );
         assert_eq!(m2.solved, 0.0, "any wrong cell -> not solved");
     }
 }

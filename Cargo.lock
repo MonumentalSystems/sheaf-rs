@@ -494,9 +494,9 @@ dependencies = [
 
 [[package]]
 name = "generativity"
-version = "1.2.1"
+version = "1.1.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "d2c81fb5260e37854d09d5c87183309fd8c555b75289427884b25660bc87a85e"
+checksum = "5881e4c3c2433fe4905bb19cfd2b5d49d4248274862b68c27c33d9ba4e13f9ec"
 
 [[package]]
 name = "generator"
@@ -526,9 +526,9 @@ dependencies = [
 
 [[package]]
 name = "gif"
-version = "0.14.2"
+version = "0.13.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "ee8cfcc411d9adbbaba82fb72661cc1bcca13e8bba98b364e62b2dba8f960159"
+checksum = "4ae047235e33e2829703574b54fdec96bfbad892062d97fed2f76022287de61b"
 dependencies = [
  "color_quant",
  "weezl",
@@ -549,9 +549,9 @@ dependencies = [
 
 [[package]]
 name = "hashbrown"
-version = "0.17.1"
+version = "0.16.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "ed5909b6e89a2db4456e54cd5f673791d7eca6732202bbf2a9cc504fe2f9b84a"
+checksum = "841d1cc9bed7f9236f321df977030373f4a4163ae1a7dbfe1a51a2c1a51d9100"
 
 [[package]]
 name = "heck"
@@ -567,23 +567,22 @@ checksum = "fc0fef456e4baa96da950455cd02c081ca953b141298e41db3fc7e36b1da849c"
 
 [[package]]
 name = "image"
-version = "0.25.10"
+version = "0.25.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "85ab80394333c02fe689eaf900ab500fbd0c2213da414687ebf995a65d5a6104"
+checksum = "db35664ce6b9810857a38a906215e75a9c879f0696556a39f59c62829710251a"
 dependencies = [
  "bytemuck",
  "byteorder-lite",
  "color_quant",
  "gif",
- "moxcms",
  "num-traits",
 ]
 
 [[package]]
 name = "indexmap"
-version = "2.14.0"
+version = "2.13.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "d466e9454f08e4a911e14806c24e16fba1b4c121d1ea474396f396069cf949d9"
+checksum = "7714e70437a7dc3ac8eb7e6f8df75fd8eb422675fc7678aff7364301092b1017"
 dependencies = [
  "equivalent",
  "hashbrown",
@@ -676,16 +675,6 @@ checksum = "1fa76a2c86f704bdb222d66965fb3d63269ce38518b83cb0575fca855ebb6316"
 dependencies = [
  "adler2",
  "simd-adler32",
-]
-
-[[package]]
-name = "moxcms"
-version = "0.8.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "bb85c154ba489f01b25c0d36ae69a87e4a1c73a72631fc6c0eb6dde34a73e44b"
-dependencies = [
- "num-traits",
- "pxfm",
 ]
 
 [[package]]
@@ -980,12 +969,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "pxfm"
-version = "0.1.29"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "e0c5ccf5294c6ccd63a74f1565028353830a9c2f5eb0c682c355c471726a6e3f"
-
-[[package]]
 name = "py_literal"
 version = "0.4.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1208,7 +1191,7 @@ dependencies = [
 
 [[package]]
 name = "sheaf-core"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "approx",
  "ndarray",
@@ -1217,7 +1200,7 @@ dependencies = [
 
 [[package]]
 name = "sheaf-demo"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "anyhow",
  "faer",
@@ -1230,7 +1213,7 @@ dependencies = [
 
 [[package]]
 name = "sheaf-io"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "anyhow",
  "approx",
@@ -1246,7 +1229,7 @@ dependencies = [
 
 [[package]]
 name = "sheaf-nn"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "anyhow",
  "approx",
@@ -1258,7 +1241,7 @@ dependencies = [
 
 [[package]]
 name = "sheaf-web"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "ndarray",
  "sheaf-core",

@@ -9,7 +9,9 @@ use std::sync::Arc;
 
 use ndarray::{Array1, Array2, Array3, Array4, Array5, Array6, Axis};
 
-use sheaf_core::admm::{run_admm, run_admm_history, AdmmHistory, AdmmParams, AdmmState, XSolverKind};
+use sheaf_core::admm::{
+    run_admm, run_admm_history, AdmmHistory, AdmmParams, AdmmState, XSolverKind,
+};
 use sheaf_core::geometry::{FixedGeometry, LoraGeometry, SheafGeometry};
 use sheaf_core::graph::AgentGraph;
 use sheaf_core::solvers::{EncoderOutput, UnrolledCgParams, ZMode};
@@ -26,14 +28,19 @@ use crate::restriction_maps::{build_directional_restriction_maps, build_shared_r
 /// `direction_names` order (safetensors keys `rm/R_N`, `rm/R_NE`, ...).
 #[derive(Debug, Clone)]
 pub struct RmParams {
+    /// Direction-indexed base maps, shaped `[K, d_e, d_v]`.
     pub r_stack: Array3<f32>,
 }
 
 /// The full maze Sheaf-ADMM model (weights + baked scalars + config).
 pub struct SheafAdmmModel {
+    /// Validated exported model and task configuration.
     pub config: ExportedConfig,
+    /// Learned maze encoder.
     pub encoder: MlpEncoderV2,
+    /// Learned maze decoder.
     pub decoder: ConcatMlpDecoderV2,
+    /// Learned direction-indexed base restriction maps.
     pub rm: RmParams,
     /// Export-baked learned penalty (config.baked.rho).
     pub rho: f32,
@@ -41,10 +48,12 @@ pub struct SheafAdmmModel {
 
 /// Everything the demo / parity tests read from one forward pass.
 pub struct MazeForward {
+    /// Full ADMM state and residual trajectory.
     pub history: AdmmHistory,
     /// Decoded per-iteration logits `[K, N, B, ph, pw, num_classes]`
     /// (the prediction is read off the **x**-iterate, matching training).
     pub logits_per_iter: Array6<f32>,
+    /// State after the final ADMM iteration.
     pub final_state: AdmmState,
     /// The assembled base maps `[E, 2, d_e, d_v]` (golden cross-check).
     pub base_restriction_maps: RestrictionMaps,
@@ -137,7 +146,15 @@ impl SheafAdmmModel {
             "simple" => XSolverKind::Simple,
             other => panic!("unknown x_solver {other:?} (diagonal_prox|simple)"),
         };
-        (enc_out, geometry, base, z_params, admm_params, x_solver, z_init)
+        (
+            enc_out,
+            geometry,
+            base,
+            z_params,
+            admm_params,
+            x_solver,
+            z_init,
+        )
     }
 
     /// Full forward with per-iteration history (mirrors Python
@@ -227,8 +244,11 @@ impl SheafAdmmModel {
 /// ONE shared restriction map (`rm_sharing = "global"`), hard-consensus
 /// `project`-mode CG, and a linear [`ClassificationDecoder`] read from `x`.
 pub struct MnistSheafModel {
+    /// Validated exported model and task configuration.
     pub config: ExportedConfig,
+    /// Learned residual MLP encoder.
     pub encoder: MlpEncoder,
+    /// Learned classification decoder.
     pub decoder: ClassificationDecoder,
     /// The single shared base restriction map `R_shared [d_e, d_v]`.
     pub rm_shared: Array2<f32>,
@@ -238,9 +258,11 @@ pub struct MnistSheafModel {
 
 /// Everything one MNIST forward pass exposes (parity + prediction).
 pub struct MnistForward {
+    /// Full ADMM state and residual trajectory.
     pub history: AdmmHistory,
     /// Decoded per-iteration per-agent logits `[K, N, B, num_classes]`.
     pub logits_per_iter: Array4<f32>,
+    /// State after the final ADMM iteration.
     pub final_state: AdmmState,
     /// The assembled shared base maps `[E, 2, d_e, d_v]` (golden cross-check).
     pub base_restriction_maps: RestrictionMaps,
@@ -335,7 +357,15 @@ impl MnistSheafModel {
             "simple" => XSolverKind::Simple,
             other => panic!("unknown x_solver {other:?} (diagonal_prox|simple)"),
         };
-        (enc_out, geometry, base, z_params, admm_params, x_solver, z_init)
+        (
+            enc_out,
+            geometry,
+            base,
+            z_params,
+            admm_params,
+            x_solver,
+            z_init,
+        )
     }
 
     /// Full forward with per-iteration history (mirrors `coordinate_history`),
@@ -418,8 +448,11 @@ impl MnistSheafModel {
 /// `prox`-mode CG, and the per-cell [`SudokuDecoder`]. The 27-agent 243-edge
 /// multigraph + `cell_ids` are built in `sheaf-io::views` and passed in per call.
 pub struct SudokuSheafModel {
+    /// Validated exported model and task configuration.
     pub config: ExportedConfig,
+    /// Learned MLP-Mixer encoder.
     pub encoder: SudokuEncoder,
+    /// Learned per-cell decoder.
     pub decoder: SudokuDecoder,
     /// The 9 soft_slice base restriction maps `R_indices [9, d_e, d_v]`, one per
     /// shared-cell slot (index 0..8 selected per endpoint by `map_u`/`map_v`).
@@ -433,9 +466,11 @@ pub struct SudokuSheafModel {
 
 /// Everything one Sudoku forward pass exposes (parity + prediction).
 pub struct SudokuForward {
+    /// Full ADMM state and residual trajectory.
     pub history: AdmmHistory,
     /// Decoded per-iteration per-cell logits `[K, N, B, 9, num_classes]`.
     pub logits_per_iter: Array5<f32>,
+    /// State after the final ADMM iteration.
     pub final_state: AdmmState,
     /// The assembled base maps `[E, 2, d_e, d_v]` (golden cross-check).
     pub base_restriction_maps: RestrictionMaps,
@@ -534,7 +569,15 @@ impl SudokuSheafModel {
             "simple" => XSolverKind::Simple,
             other => panic!("unknown x_solver {other:?} (diagonal_prox|simple)"),
         };
-        (enc_out, geometry, base, z_params, admm_params, x_solver, z_init)
+        (
+            enc_out,
+            geometry,
+            base,
+            z_params,
+            admm_params,
+            x_solver,
+            z_init,
+        )
     }
 
     /// Full forward with per-iteration history (mirrors `coordinate_history`),
@@ -631,7 +674,9 @@ mod tests {
             params: ConcatMlpDecoderV2Params {
                 input_norm: RmsNorm::new(Array1::ones(4)),
                 dense: Dense::new(
-                    Array2::from_shape_fn((4, 3), |(i, j)| 0.1 * (i as f32 + 1.0) - 0.05 * j as f32),
+                    Array2::from_shape_fn((4, 3), |(i, j)| {
+                        0.1 * (i as f32 + 1.0) - 0.05 * j as f32
+                    }),
                     Array1::zeros(3),
                 ),
                 output_dense: Dense::new(

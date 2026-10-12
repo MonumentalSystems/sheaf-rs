@@ -12,6 +12,7 @@ use super::SheafGeometry;
 
 /// Sheaf geometry with learned but input-independent restriction maps.
 pub struct FixedGeometry {
+    /// Static agent graph whose oriented edges index the restriction maps.
     pub graph: Arc<AgentGraph>,
     /// `[E, 2, d_e, d_v]`; slot 0 = F_{u->e}, slot 1 = F_{v->e}.
     pub restriction_maps: RestrictionMaps,
@@ -21,13 +22,18 @@ pub struct FixedGeometry {
 }
 
 impl FixedGeometry {
+    /// Creates a fixed geometry and verifies that every graph edge has a map.
     pub fn new(graph: Arc<AgentGraph>, restriction_maps: RestrictionMaps) -> Self {
         assert_eq!(
             restriction_maps.shape()[0],
             graph.num_edges(),
             "restriction_maps leading axis must be E"
         );
-        Self { graph, restriction_maps, edge_mask: None }
+        Self {
+            graph,
+            restriction_maps,
+            edge_mask: None,
+        }
     }
 }
 

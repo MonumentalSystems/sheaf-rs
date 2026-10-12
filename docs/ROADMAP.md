@@ -1,119 +1,88 @@
-# Roadmap — remaining work (DGX handoff)
+# Roadmap
 
-Work order for completing the sheaf-rs project. Written for an autonomous
-agent with a CUDA machine (DGX). Read `docs/PLAN.md` first — it is the
-authoritative design (math mapping §3, numerics contract §3.4, parity
-strategy §5, milestones §7, risks §8). This file only says what is left and
-in what order.
+This is the forward-looking companion to `docs/PLAN.md`. The plan records the
+design and numerical contract; this file records what is actually supported,
+what is implemented but not yet release-qualified, and what remains.
 
-## Status snapshot (as of v0.2.0)
+## v0.3.0 release candidate
 
-Done:
-- **M1–M3**: workspace, `sheaf-core`/`sheaf-io`/`sheaf-nn`, maze path
-  end-to-end, layer-by-layer golden parity vs the JAX reference
-  (`parity_check`: 106/106), 90+ workspace tests, CI green.
-- **Trained maze weights** (30 epochs, 2k mazes, CPU): 99.61% solved /
-  100% cell_acc in-dist, 88.45% ood_2xW. Checkpoint + goldens in
-  `goldens/maze/`. **Not a paper reproduction.**
-- **M6**: `sheaf-web` WASM crate + browser demo, live at
-  https://monumentalsystems.github.io/sheaf-rs/ (Pages deploys from
-  `.github/workflows/pages.yml`); demo bundle attached to GitHub releases.
-- Releases: crates.io `sheaf-core`/`sheaf-nn`/`sheaf-io` 0.2.0
-  (tag-triggered via `.github/workflows/release.yml`).
+The supported artifact is the maze inference path:
 
-Remaining: paper-scale training (A), MNIST path (B), Sudoku path (C),
-M5 leftovers (D), optional Rust training (E), housekeeping (F).
+- Pure-Rust native and WebAssembly inference with no Python runtime.
+- Paper-scale maze weights trained at the Table 1 operating point (seed 42,
+  50 epochs, 10,000 training mazes), with checkpoint and training history kept
+  as provenance.
+- 106/106 JAX-to-Rust parity checks over data views, graph slots, encoder and
+  LoRA heads, restriction maps, 12 complete ADMM iterates, residuals, decoded
+  logits, reassembly, and the final prediction.
+- In-distribution and OOD metrics recorded in the README; these are a
+  single-seed result, not a multi-seed reproduction claim.
+- Native TUI/GIF demo, `viz_export`, rayon batch parallelism, and the live
+  browser demo at <https://monumentalsystems.github.io/sheaf-rs/>.
+- Published crates `sheaf-core`, `sheaf-nn`, and `sheaf-io`, now prepared for
+  the 0.3.0 release with Rust 1.84 MSRV checks, strict public API docs,
+  all-features testing, and LICENSE/NOTICE files inside every crate archive.
 
-## Environment setup (once)
+The public inference scalar remains fixed to fp32, matching the exported-model
+contract. A type-changing `f64` Cargo feature was removed because Cargo
+features must be additive and downstream feature unification made that API
+non-composable. Precision investigations should use isolated f64 reference
+calculations and the exported JAX traces.
 
-```bash
-git clone https://github.com/SakanaAI/sheaf-admm   # the JAX reference
-cd sheaf-admm && uv sync && uv pip install -U "jax[cuda12]"
-# sanity: uv run python -c "import jax; print(jax.devices())"  -> [CudaDevice(...)]
-```
+## Implemented, not yet release-qualified
 
-The exporter/golden tools in this repo (`tools/export_weights.py`,
-`tools/dump_goldens.py`, `tools/convert_f16.py`) run inside that checkout's
-uv env. `goldens/maze/NOTES.md` documents exactly how the current fixtures
-were produced; replicate that flow for every new config.
+MNIST and Sudoku model paths exist in `sheaf-nn` and `sheaf-io`, including the
+residual MNIST encoder/classifier, Sudoku MLP-Mixer encoder, soft-slice graph,
+LoRA gathering, decoder, and evaluation helpers. They remain scaffolding until
+each path has all of the following:
 
-**Non-negotiable working conventions** (see PLAN.md §3.4/§5): fp32
-everywhere (the reference pins no-TF32 — do NOT enable TF32 on the DGX when
-dumping goldens or training for parity targets); never weaken parity
-tolerances to make a check pass — find the bug; every new model path gets
-layer-by-layer goldens BEFORE debugging end-to-end; eval acceptance is
-metrics <0.1% vs Python on a fixed exported batch, replicating the eval
-quirks listed in PLAN.md §5.2.
+1. Trained exported weights with provenance.
+2. Task-specific layer and full-trajectory golden fixtures.
+3. A CI parity runner against the pinned JAX reference.
+4. Fixed-batch evaluation within 0.1% of the Python metrics.
+5. A user-facing example that loads and runs the released artifact.
 
-## Phase A — paper-scale maze training
+Until those gates pass, release notes and crate documentation must not present
+MNIST or Sudoku as validated model releases.
 
-1. Build the full dataset (README of the reference repo: 19×19, 10k/1k,
-   `--ood-sizes`).
-2. Train `+experiment=maze_sheaf` at paper settings, seeds 42/123/456.
-3. Pick the best seed; `tools/export_weights.py --checkpoint ...` (bakes the
-   TRAINED rho; writes provenance), `tools/dump_goldens.py`, replace
-   `goldens/maze/`, run `parity_check` + full eval acceptance incl. all OOD
-   splits at K_eval=100.
-4. `tools/convert_f16.py` → refresh `crates/sheaf-web/assets/`, bump the
-   README metrics table and the web footer note (it currently says
-   "30-epoch small-dataset run"), push → Pages redeploys.
+## Next work
 
-Exit: parity green on paper weights; demo runs paper-quality; README states
-per-seed paper-config metrics.
+### 1. Multi-seed maze characterization
 
-## Phase B — M4a: MNIST path
+Train the remaining paper-config seeds (123 and 456), export their provenance,
+and report mean and spread alongside the existing seed-42 artifact. Keep the
+existing 106-check trace as the deterministic portability contract, and add a
+small fixed evaluation bundle for release regression testing.
 
-Reference configs: `mnist_sheaf`. Rust work in `sheaf-nn`/`sheaf-io`:
-residual `MLPEncoder` (not V2), linear classification decoder, lasso
-objective (l1=0.006337 scalar), `z_mode=project`, shared restriction map,
-LoRA r=8 legacy init, d_v=32, d_e=24. Eval quirk: prediction = argmax of the
-**mean of per-agent softmax** (NOT mean logits) — PLAN.md §5.2.
+### 2. Qualify MNIST
 
-1. Train on DGX (build_mnist dataset).
-2. Extend the tools for the mnist config (exporter key manifest, goldens
-   with K=12 trace on 2 fixed inputs).
-3. Implement, add `parity_check --task mnist` (or a second bin), iterate to
-   green under the same widening tolerance schedule.
-4. `mnist_eval` bin: eval acceptance <0.1% on an exported test batch.
+Generate weights and goldens for `mnist_sheaf`, add a dedicated parity command,
+and verify the evaluation quirk exactly: prediction is the argmax of the mean
+of per-agent softmax probabilities, not the mean logits.
 
-## Phase C — M4b: Sudoku path (the fiddliest — densest goldens)
+### 3. Qualify Sudoku
 
-Reference configs: `sudoku_sheaf`, `sudoku_sheaf_lora`. Rust work: Mixer
-encoder (SwiGLU, the √d_model/√2 scale applied AFTER both position
-embeddings), d_v=288 with cell k at contiguous stalk block [k·32,(k+1)·32),
-9 slot maps via soft_slice, non_negative objective, γ=2, 27 agents
-(row/col/box views, [B,27,…] batch-axis convention — do NOT normalize),
-the 243-edge multigraph hardcoded as a const table (cross-check vs the
-Python builder: each of 81 cells covered exactly 3×), sudoku-LoRA gather.
-Param pins to assert: 543,025 (fixed) / 2,029,233 (LoRA).
+Generate weights and dense sublayer goldens for `sudoku_sheaf` and
+`sudoku_sheaf_lora`. Validate the 27-view convention, 243-edge multigraph,
+contiguous cell-stalk blocks, and completion metric on empty input cells.
 
-Same flow as Phase B: train (this is the config that actually needs the
-DGX), goldens (extra density: dump every Mixer sublayer), implement, parity,
-`sudoku_demo` polish (per-cell digit beliefs sharpening; violation shading).
+### 4. Optional Rust training
 
-## Phase D — M5 leftovers (parallel with B/C)
+Only undertake the fenced M7 work when explicitly requested. The proposed
+target is a small frozen-rho configuration with an explicit unrolled reverse
+sweep and checkpoint/recompute through conjugate gradient. Its acceptance
+criterion is gradient and training agreement with the same JAX configuration,
+not paper-scale parity.
 
-- `viz_export` bin: per-agent [N,K] log-residual heatmap + joint-PCA x/z
-  phase portrait (faer SVD) from `AdmmHistory` (PLAN.md §1 viz note).
-- `parallel` feature: rayon over the batch axis in sheaf-core (each batch
-  element owns its [N,d_v] slab). Keep default single-threaded (wasm).
-- `f64` feature build of sheaf-core (roundoff-vs-bug triage, PLAN.md §3.4).
-- GIF export for maze_demo (`image`+`gif` crates; plan §6).
+## Release discipline
 
-## Phase E (optional) — M7: training in Rust
-
-Only if explicitly requested. PLAN.md §4 Tier 3 verbatim: hand-derived
-reverse sweep for a frozen-ρ mini-MNIST config, checkpoint+recompute through
-CG, on-kink gradient goldens, AdamW+EMA replica. Exit: gradcheck ladder
-green; Rust-trained mini config within ~1% of the same config trained in
-JAX. Fallback if scope creeps: Burn via the ops facade.
-
-## Phase F — housekeeping
-
-- Migrate crates.io publishing to Trusted Publishing (OIDC) and drop the
-  `CARGO_REGISTRY_TOKEN` secret (configure on crates.io per crate, then swap
-  the workflow to `rust-lang/crates-io-auth-action`).
-- Release procedure per `.github/workflows/release.yml` header comment;
-  next feature release: v0.3.0 (Phase A/B), v0.4.0 (Phase C/D).
-- Keep `parity_check` as a required release gate — it is the project's
-  correctness contract.
+- Keep `parity_check` as a mandatory CI and release gate.
+- Run clippy, all-target/all-feature tests, strict rustdoc, and package
+  validation on every pull request.
+- Test the declared MSRV (Rust 1.84) independently from stable Rust.
+- Confirm every published `.crate` contains `LICENSE` and `NOTICE`.
+- Tag only after the workspace version and intra-workspace dependency versions
+  agree. The release workflow publishes in dependency order using crates.io
+  Trusted Publishing and performs a dry run immediately before each upload.
+- Treat training checkpoints as provenance inputs; Rust consumers load only the
+  exported safetensors/config artifacts.

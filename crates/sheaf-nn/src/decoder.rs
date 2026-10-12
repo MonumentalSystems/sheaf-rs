@@ -14,14 +14,20 @@ use ndarray::{concatenate, Array2, Array3, Array4, Array5, Axis};
 
 use crate::layers::{gelu_tanh, Dense, MlpBlock, RmsNorm};
 
+/// Learned parameters of the maze concatenation decoder.
 #[derive(Debug, Clone)]
 pub struct ConcatMlpDecoderV2Params {
-    pub input_norm: RmsNorm, // input_norm/scale [64]
-    pub dense: Dense,        // dense/{kernel [64,256], bias}
-    pub output_dense: Dense, // output_dense/{kernel [256,54], bias}
+    /// RMS normalization after concatenating patch and state features.
+    pub input_norm: RmsNorm,
+    /// Hidden projection.
+    pub dense: Dense,
+    /// Projection to per-patch logits.
+    pub output_dense: Dense,
 }
 
+/// Maze decoder that combines each local patch with its agent state.
 pub struct ConcatMlpDecoderV2 {
+    /// Learned decoder parameters.
     pub params: ConcatMlpDecoderV2Params,
     /// (ph, pw, num_classes) = (3, 3, 6) for the maze. Python derives the
     /// spatial dims from the patch per call (`output_shape = (*patches.shape
@@ -58,8 +64,7 @@ impl ConcatMlpDecoderV2 {
             .expect("decoder: x flatten");
 
         // Concat order is patch FIRST, then x (decoder.py: [patch_flat, x]).
-        let h = concatenate(Axis(1), &[patch_flat.view(), x_flat.view()])
-            .expect("decoder: concat");
+        let h = concatenate(Axis(1), &[patch_flat.view(), x_flat.view()]).expect("decoder: concat");
         let h = self.params.input_norm.forward(&h);
         let h = self.params.dense.forward(&h).mapv(gelu_tanh);
         let out = self.params.output_dense.forward(&h);
@@ -94,8 +99,11 @@ pub struct ClassificationDecoderParams {
     pub cls_output: Dense,
 }
 
+/// Configured per-agent classification decoder.
 pub struct ClassificationDecoder {
+    /// Learned classification parameters.
     pub params: ClassificationDecoderParams,
+    /// Selects the state-only or state-plus-patch readout.
     pub readout_mode: ReadoutMode,
     /// Number of output classes (= `cls_output` out-dim).
     pub num_classes: usize,
@@ -118,7 +126,11 @@ impl ClassificationDecoder {
             ReadoutMode::XOnly => x_flat,
             ReadoutMode::Concat => {
                 let (np, bp, ph, pw, ch) = patches.dim();
-                assert_eq!((n, b), (np, bp), "classification: x/patches agent-batch mismatch");
+                assert_eq!(
+                    (n, b),
+                    (np, bp),
+                    "classification: x/patches agent-batch mismatch"
+                );
                 let patch_flat: Array2<f32> = patches
                     .as_standard_layout()
                     .into_owned()
@@ -131,7 +143,11 @@ impl ClassificationDecoder {
         };
 
         let logits = self.params.cls_output.forward(&readout);
-        assert_eq!(logits.shape()[1], self.num_classes, "classification: cls_output width");
+        assert_eq!(
+            logits.shape()[1],
+            self.num_classes,
+            "classification: cls_output width"
+        );
         logits
             .into_shape_with_order((n, b, self.num_classes))
             .expect("classification: output reshape")
@@ -149,11 +165,15 @@ impl ClassificationDecoder {
 /// widens 32 -> 256 (its residual path runs through a learned `residual_proj`).
 #[derive(Debug, Clone)]
 pub struct SudokuDecoderParams {
-    pub blocks: Vec<MlpBlock>, // block_0 .. (one 32->256 residual block shipped)
-    pub output_dense: Dense,   // output_dense [hidden, output_channels]
+    /// Shared per-cell residual blocks.
+    pub blocks: Vec<MlpBlock>,
+    /// Projection from cell features to class logits.
+    pub output_dense: Dense,
 }
 
+/// Decoder that maps each agent's nine cell-state blocks to class logits.
 pub struct SudokuDecoder {
+    /// Learned decoder parameters.
     pub params: SudokuDecoderParams,
     /// Number of output classes (= `output_dense` out-dim), 10 for sudoku.
     pub num_classes: usize,
@@ -178,7 +198,11 @@ impl SudokuDecoder {
             feats = block.forward(&feats);
         }
         let logits = self.params.output_dense.forward(&feats);
-        assert_eq!(logits.shape()[1], self.num_classes, "sudoku decoder: output width");
+        assert_eq!(
+            logits.shape()[1],
+            self.num_classes,
+            "sudoku decoder: output width"
+        );
         logits
             .into_shape_with_order((n, b, 9, self.num_classes))
             .expect("sudoku decoder: output reshape")
@@ -345,12 +369,24 @@ mod tests {
         let patches = Array5::from_shape_fn((2, 1, 1, 2, 2), |(n, _, _, w, c)| {
             0.2 + n as f32 - 0.5 * w as f32 + 0.3 * c as f32
         });
-        let x = Array3::from_shape_fn((2, 1, 2), |(n, _, d)| -0.1 + 0.4 * n as f32 + 1.1 * d as f32);
+        let x = Array3::from_shape_fn((2, 1, 2), |(n, _, d)| {
+            -0.1 + 0.4 * n as f32 + 1.1 * d as f32
+        });
         let logits = dec.forward(&x, &patches);
         assert_eq!(logits.shape(), &[2, 1, 1, 2, 3]);
         let expect = [
-            -0.19535841, 0.13287202, 0.61593527, 0.14332421, 0.30102476, -0.17158626,
-            -0.08221303, 0.12608501, 0.5638027, 0.06759243, 0.30013758, -0.1960727,
+            -0.19535841,
+            0.13287202,
+            0.61593527,
+            0.14332421,
+            0.30102476,
+            -0.17158626,
+            -0.08221303,
+            0.12608501,
+            0.5638027,
+            0.06759243,
+            0.30013758,
+            -0.1960727,
         ];
         for (g, e) in logits.iter().zip(expect.iter()) {
             assert_abs_diff_eq!(g, e, epsilon = 1e-5);
@@ -390,7 +426,9 @@ mod tests {
     fn classification_x_only_is_linear_over_x() {
         // readout = x, logits = x @ W + b, reshaped to [N, B, num_classes].
         let (d_v, num_classes) = (3usize, 4usize);
-        let kernel = Array2::from_shape_fn((d_v, num_classes), |(i, j)| 0.1 * i as f32 - 0.05 * j as f32);
+        let kernel = Array2::from_shape_fn((d_v, num_classes), |(i, j)| {
+            0.1 * i as f32 - 0.05 * j as f32
+        });
         let bias = Array1::from_shape_fn(num_classes, |j| 0.2 * j as f32);
         let dec = ClassificationDecoder {
             params: ClassificationDecoderParams {
@@ -400,7 +438,9 @@ mod tests {
             num_classes,
         };
         let (n, b) = (3, 2);
-        let x = Array3::from_shape_fn((n, b, d_v), |(i, j, d)| 0.3 * i as f32 - 0.2 * j as f32 + 0.5 * d as f32);
+        let x = Array3::from_shape_fn((n, b, d_v), |(i, j, d)| {
+            0.3 * i as f32 - 0.2 * j as f32 + 0.5 * d as f32
+        });
         let patches = Array5::<f32>::zeros((n, b, 1, 1, 1)); // ignored by x_only
         let logits = dec.forward(&x, &patches);
         assert_eq!(logits.shape(), &[n, b, num_classes]);
@@ -426,29 +466,41 @@ mod tests {
         // mean-softmax sum = [1.3750, 0.6250] -> argmax 0. (agree)
         // Flip: use TWO mild class-1 agents vs one saturated class-0 agent, but
         // make the saturated one only moderate so softmax mass stays split.
-        let logits = Array3::from_shape_vec((3, 1, 2), vec![
-            0.0f32, 1.2, // softmax ~ [0.2315, 0.7685]
-            0.0, 1.2,    // softmax ~ [0.2315, 0.7685]
-            2.5, 0.0,    // softmax ~ [0.9241, 0.0759]
-        ])
+        let logits = Array3::from_shape_vec(
+            (3, 1, 2),
+            vec![
+                0.0f32, 1.2, // softmax ~ [0.2315, 0.7685]
+                0.0, 1.2, // softmax ~ [0.2315, 0.7685]
+                2.5, 0.0, // softmax ~ [0.9241, 0.0759]
+            ],
+        )
         .unwrap();
         // mean-of-logits = [2.5/3, 2.4/3] = [0.8333, 0.8000] -> argmax 0.
         // mean-of-softmax sum = [1.3871, 1.6129] -> argmax 1. DISAGREE.
         let pred = mnist_mean_softmax_predict(&logits);
-        assert_eq!(pred[0], 1, "prediction must follow the mean of per-agent softmax");
+        assert_eq!(
+            pred[0], 1,
+            "prediction must follow the mean of per-agent softmax"
+        );
 
         // Cross-check against a hand-rolled mean-softmax argmax.
         let (n, b, c) = logits.dim();
         let mut agg = vec![0.0f64; c];
         for ni in 0..n {
-            let mx = (0..c).map(|ci| logits[[ni, 0, ci]] as f64).fold(f64::NEG_INFINITY, f64::max);
-            let exps: Vec<f64> = (0..c).map(|ci| ((logits[[ni, 0, ci]] as f64) - mx).exp()).collect();
+            let mx = (0..c)
+                .map(|ci| logits[[ni, 0, ci]] as f64)
+                .fold(f64::NEG_INFINITY, f64::max);
+            let exps: Vec<f64> = (0..c)
+                .map(|ci| ((logits[[ni, 0, ci]] as f64) - mx).exp())
+                .collect();
             let denom: f64 = exps.iter().sum();
             for (agg_c, &e) in agg.iter_mut().zip(exps.iter()) {
                 *agg_c += e / denom;
             }
         }
-        let manual = (0..c).max_by(|&i, &j| agg[i].partial_cmp(&agg[j]).unwrap()).unwrap();
+        let manual = (0..c)
+            .max_by(|&i, &j| agg[i].partial_cmp(&agg[j]).unwrap())
+            .unwrap();
         assert_eq!(pred[0] as usize, manual);
         let _ = b;
     }
@@ -462,11 +514,15 @@ mod tests {
         let block = MlpBlock {
             norm: RmsNorm::new(Array1::ones(cell_dim)),
             dense1: Dense::new(
-                Array2::from_shape_fn((cell_dim, cell_dim), |(i, j)| 0.1 * (i as f32 + 1.0) - 0.05 * j as f32),
+                Array2::from_shape_fn((cell_dim, cell_dim), |(i, j)| {
+                    0.1 * (i as f32 + 1.0) - 0.05 * j as f32
+                }),
                 Array1::zeros(cell_dim),
             ),
             dense2: Dense::new(
-                Array2::from_shape_fn((cell_dim, cell_dim), |(i, j)| 0.2 * i as f32 - 0.1 * j as f32),
+                Array2::from_shape_fn((cell_dim, cell_dim), |(i, j)| {
+                    0.2 * i as f32 - 0.1 * j as f32
+                }),
                 Array1::from_vec(vec![0.01, -0.02]),
             ),
             residual_proj: None,
@@ -475,7 +531,9 @@ mod tests {
             params: SudokuDecoderParams {
                 blocks: vec![block],
                 output_dense: Dense::new(
-                    Array2::from_shape_fn((cell_dim, 10), |(i, j)| 0.03 * i as f32 - 0.01 * j as f32),
+                    Array2::from_shape_fn((cell_dim, 10), |(i, j)| {
+                        0.03 * i as f32 - 0.01 * j as f32
+                    }),
                     Array1::from_shape_fn(10, |j| 0.001 * j as f32),
                 ),
             },
@@ -493,7 +551,8 @@ mod tests {
         for i in 0..n {
             for j in 0..b {
                 for k in 0..9 {
-                    let cell = Array2::from_shape_fn((1, cell_dim), |(_, d)| x[[i, j, k * cell_dim + d]]);
+                    let cell =
+                        Array2::from_shape_fn((1, cell_dim), |(_, d)| x[[i, j, k * cell_dim + d]]);
                     let h = dec.params.blocks[0].forward(&cell);
                     let want = dec.params.output_dense.forward(&h);
                     for cc in 0..10 {

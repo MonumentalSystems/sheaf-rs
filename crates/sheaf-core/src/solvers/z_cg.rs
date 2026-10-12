@@ -22,6 +22,7 @@ use crate::Scalar;
 pub const CG_DENOM_EPS: Scalar = 1e-8;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+/// Consensus operator implemented by the unrolled conjugate-gradient solver.
 pub enum ZMode {
     /// Hard consensus: solve `(L + eps*I) w = L z_target`, return `z_target - w`,
     /// warm start `w0 = z_target - z_prev`. Tikhonov eps default 1e-5.
@@ -32,7 +33,9 @@ pub enum ZMode {
 }
 
 #[derive(Debug, Clone, Copy)]
+/// Parameters for the fixed-iteration consensus solve.
 pub struct UnrolledCgParams {
+    /// Selects hard projection or soft proximal consensus.
     pub mode: ZMode,
     /// Soft-consensus weight gamma (maze: 5.0).
     pub gamma: Scalar,
@@ -47,7 +50,12 @@ impl Default for UnrolledCgParams {
     /// Python `UnrolledCGParams` defaults: prox mode, gamma 1.0, T = 5,
     /// Tikhonov 1e-5.
     fn default() -> Self {
-        Self { mode: ZMode::Prox, gamma: 1.0, num_iters: 5, tikhonov_eps: 1e-5 }
+        Self {
+            mode: ZMode::Prox,
+            gamma: 1.0,
+            num_iters: 5,
+            tikhonov_eps: 1e-5,
+        }
     }
 }
 

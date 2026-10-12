@@ -7,7 +7,14 @@
 use crate::tensor::NodeState;
 use crate::Scalar;
 
-pub fn simple_solve(z: &NodeState, y: &NodeState, rho: Scalar, h: &NodeState, beta: Scalar) -> NodeState {
+/// Solves the tethered-average local update in closed form.
+pub fn simple_solve(
+    z: &NodeState,
+    y: &NodeState,
+    rho: Scalar,
+    h: &NodeState,
+    beta: Scalar,
+) -> NodeState {
     assert_eq!(h.dim(), z.dim(), "h must be [N, B, d_v]");
     let denom = beta + rho;
     let mut x = NodeState::zeros(z.dim());
